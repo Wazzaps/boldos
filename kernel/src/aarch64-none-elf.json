@@ -1,0 +1,30 @@
+{
+  "arch": "aarch64",
+  "data-layout": "e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32",
+  "executables": true,
+  "disable-redzone": true,
+  "position-independent-executables": false,
+  "features": "+a72,+strict-align,-fp-armv8",
+  "linker": "aarch64-linux-gnu-ld",
+  "linker-flavor": "ld",
+  "linker-is-gnu": true,
+  "llvm-target": "aarch64-unknown-none-softfloat",
+  "max-atomic-width": 128,
+  "os": "none",
+  "panic-strategy": "abort",
+  "relocation-model": "pic",
+  "target-c-int-width": "32",
+  "target-endian": "little",
+  "target-pointer-width": "64",
+  "exe-suffix": ".elf",
+  "trap-unreachable": true,
+  "emit-debug-gdb-scripts": true,
+  "pre-link-args": {
+    "ld": [
+      "--script=src/linker.lds",
+      "--gc-sections",
+      "--hash-style=sysv",
+      "-Bstatic"
+    ]
+  }
+}
