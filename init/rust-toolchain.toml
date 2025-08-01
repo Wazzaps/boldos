@@ -1,0 +1,4 @@
+[toolchain]
+channel = "nightly-2025-05-14"
+targets = ["aarch64-unknown-none"]
+profile = "default"

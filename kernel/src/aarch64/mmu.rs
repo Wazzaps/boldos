@@ -1,11 +1,13 @@
 use core::arch::asm;
 
 use crate::page_alloc::{PageBox, PhyAddr, PAGE_SIZE};
-use crate::println;
 use aarch64_cpu::registers::{ReadWriteable, Writeable, VBAR_EL1};
 use aarch64_cpu::registers::{MAIR_EL1, SCTLR_EL1, TCR_EL1, TTBR0_EL1, TTBR1_EL1};
 use tock_registers::interfaces::Readable;
 use zerocopy::FromZeros;
+
+#[allow(unused_imports)]
+use crate::println;
 
 pub const PT_PAGE: u64 = 0b11;
 pub const PT_BLOCK: u64 = 0b01;
@@ -34,6 +36,7 @@ impl PageTable {
             // TODO: Doesn't handle oom
             let new_table = PageBox::leak(PageBox::<PageTable>::new_zeroed());
             let phy_addr = PhyAddr::from_virt(new_table);
+            #[cfg(feature = "log_mmu")]
             println!("  mmu: Allocated PT at {:?}", phy_addr);
             self.0[idx] = phy_addr.0 as u64 | flags;
             new_table
@@ -56,6 +59,7 @@ impl PageTable {
             PT_ISH | // inner shareable
             PT_MEM; // normal memory
 
+        #[cfg(feature = "log_mmu")]
         println!("  mmu: Mapping {:?} to 0x{:x}", paddr, vaddr);
         assert_eq!(PAGE_SIZE, 4096); // TODO
         assert!(vaddr < 0x8000000000);

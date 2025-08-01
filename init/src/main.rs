@@ -21,9 +21,9 @@ unsafe fn log_buf(s: &[u8]) {
 pub extern "C" fn _start() -> ! {
     unsafe {
         for _ in 0..3 {
-            log_buf(b"Hello, world!");
+            log_buf(b"Hello from usermode!");
         }
-        log_buf(b"Hello, world 2!");
+        log_buf(b"Bye for now");
     }
     loop {}
 }
