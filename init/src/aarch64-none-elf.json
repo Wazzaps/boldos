@@ -1,0 +1,27 @@
+{
+  "abi": "softfloat",
+  "arch": "aarch64",
+  "code-model": "small",
+  "data-layout": "e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32",
+  "disable-redzone": true,
+  "emit-debug-gdb-scripts": true,
+  "exe-suffix": ".elf",
+  "executables": true,
+  "features": "+a72,+strict-align,-neon,-fp-armv8",
+  "linker": "rust-lld",
+  "linker-flavor": "gnu-lld",
+  "llvm-target": "aarch64-unknown-none",
+  "max-atomic-width": 128,
+  "os": "none",
+  "panic-strategy": "abort",
+  "relocation-model": "pic",
+  "target-c-int-width": "32",
+  "target-endian": "little",
+  "target-pointer-width": "64",
+  "trap-unreachable": true,
+  "pre-link-args": {
+    "gnu-lld": [
+      "--script=src/linker.lds"
+    ]
+  }
+}

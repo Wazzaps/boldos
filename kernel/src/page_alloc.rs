@@ -1,5 +1,78 @@
+use crate::aarch64::interrupts::IrqMutex;
 use crate::{print, println};
-use core::ptr::write_bytes;
+use core::fmt::{Debug, Formatter};
+use core::marker::PhantomData;
+use core::ops::{Deref, DerefMut};
+use core::ptr::{drop_in_place, slice_from_raw_parts, slice_from_raw_parts_mut, write_bytes};
+use core::{fmt, mem};
+use zerocopy::FromZeros;
+
+pub const PAGE_SIZE: usize = 4096;
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct PhyAddr(pub usize);
+
+impl PhyAddr {
+    pub fn from_virt<T>(addr: *const T) -> Self {
+        Self(addr as usize & 0x0000_00ff_ffff_ffff)
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct PhySlice {
+    pub base: PhyAddr,
+    pub len: usize,
+}
+
+impl Debug for PhyAddr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "0p{:x}", self.0)
+    }
+}
+
+impl Debug for PhySlice {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "0p{:x}..0p{:x}", self.base.0, self.base.0 + self.len)
+    }
+}
+
+impl PhyAddr {
+    pub unsafe fn virt<T>(&self) -> *const T {
+        (self.0 | 0xffff_ff00_0000_0000u64 as usize) as *const T
+    }
+
+    pub unsafe fn virt_mut<T>(&self) -> *mut T {
+        (self.0 | 0xffff_ff00_0000_0000u64 as usize) as *mut T
+    }
+
+    pub unsafe fn virt_dev<T>(&self) -> *const T {
+        (self.0 | 0xffff_ff80_0000_0000u64 as usize) as *const T
+    }
+
+    pub unsafe fn virt_dev_mut<T>(&self) -> *mut T {
+        (self.0 | 0xffff_ff80_0000_0000u64 as usize) as *mut T
+    }
+}
+
+impl PhySlice {
+    pub unsafe fn virt(&self) -> &'static [u8] {
+        &*slice_from_raw_parts(self.base.virt(), self.len)
+    }
+
+    pub unsafe fn virt_mut(&self) -> &'static mut [u8] {
+        &mut *slice_from_raw_parts_mut(self.base.virt_mut(), self.len)
+    }
+
+    pub unsafe fn virt_dev(&self) -> &'static [u8] {
+        &*slice_from_raw_parts(self.base.virt_dev(), self.len)
+    }
+
+    pub unsafe fn virt_dev_mut(&self) -> &'static mut [u8] {
+        &mut *slice_from_raw_parts_mut(self.base.virt_dev_mut(), self.len)
+    }
+}
 
 struct BitmapIterator<'a> {
     bitmap: &'a [u64],
@@ -132,7 +205,10 @@ impl<const SIZE: usize> Bitmap<SIZE> {
         }
     }
 }
-pub static mut PAGE_ALLOC: BitmapPageAlloc<1024> = BitmapPageAlloc::new(0);
+const PAGE_ALLOC_CELLS: usize = 1024;
+pub const PAGE_ALLOC_PAGES: usize = PAGE_ALLOC_CELLS * 64;
+pub static PAGE_ALLOC: IrqMutex<BitmapPageAlloc<PAGE_ALLOC_CELLS>> =
+    IrqMutex::new(BitmapPageAlloc::new(0));
 
 pub struct PageSlice {
     buf: *mut (),
@@ -148,8 +224,20 @@ impl PageSlice {
         self.buf
     }
 
+    pub fn as_slice(&self) -> &[u8] {
+        unsafe { core::slice::from_raw_parts(self.as_ptr() as *const u8, self.len) }
+    }
+
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        unsafe { core::slice::from_raw_parts_mut(self.as_mut_ptr() as *mut u8, self.len) }
+    }
+
     pub fn len(&self) -> usize {
         self.len
+    }
+
+    pub fn zero(&mut self) {
+        unsafe { write_bytes(self.as_ptr() as *mut u64, 0, PAGE_SIZE / 8) };
     }
 }
 
@@ -162,7 +250,7 @@ impl Drop for PageSlice {
 
             // Free the pages
             #[allow(static_mut_refs)]
-            PAGE_ALLOC.free(self.buf as usize, self.len / 4096);
+            PAGE_ALLOC.lock().free(self.buf as usize, self.len / 4096);
         }
     }
 }
@@ -173,7 +261,6 @@ pub struct BitmapPageAlloc<const SIZE: usize> {
 }
 
 impl<const SIZE: usize> BitmapPageAlloc<SIZE> {
-    const PAGE_SIZE: usize = 4096;
     pub const fn new(ram_base: usize) -> Self {
         Self {
             bitmap_alloc: Bitmap::new(),
@@ -184,20 +271,28 @@ impl<const SIZE: usize> BitmapPageAlloc<SIZE> {
     pub fn alloc(&mut self, page_count: usize) -> Option<PageSlice> {
         if let Some(page_num) = self.bitmap_alloc.alloc(page_count) {
             Some(PageSlice {
-                buf: (self.ram_base + page_num * Self::PAGE_SIZE) as *mut (),
-                len: page_count * Self::PAGE_SIZE,
+                buf: (self.ram_base + page_num * PAGE_SIZE) as *mut (),
+                len: page_count * PAGE_SIZE,
             })
         } else {
             None
         }
     }
 
+    pub fn alloc_zeroed(&mut self, page_count: usize) -> Option<PageSlice> {
+        let mut slice = self.alloc(page_count);
+        if let Some(slice) = &mut slice {
+            slice.zero();
+        }
+        slice
+    }
+
     pub fn mark_allocated(&mut self, addr: usize, page_count: usize) {
-        debug_assert!(addr % Self::PAGE_SIZE == 0, "addr must be page-aligned");
+        debug_assert!(addr % PAGE_SIZE == 0, "addr must be page-aligned");
         debug_assert!(addr >= self.ram_base, "addr was before RAM");
         debug_assert!(
-            addr + page_count * Self::PAGE_SIZE
-                <= self.ram_base + self.bitmap_alloc.bit_capacity() * Self::PAGE_SIZE,
+            addr + page_count * PAGE_SIZE
+                <= self.ram_base + self.bitmap_alloc.bit_capacity() * PAGE_SIZE,
             "(addr + count) was after RAM"
         );
         self.bitmap_alloc
@@ -205,11 +300,11 @@ impl<const SIZE: usize> BitmapPageAlloc<SIZE> {
     }
 
     pub fn free(&mut self, addr: usize, page_count: usize) {
-        debug_assert!(addr % Self::PAGE_SIZE == 0, "addr must be page-aligned");
+        debug_assert!(addr % PAGE_SIZE == 0, "addr must be page-aligned");
         debug_assert!(addr >= self.ram_base, "addr was before RAM");
         debug_assert!(
-            addr + page_count * Self::PAGE_SIZE
-                <= self.ram_base + self.bitmap_alloc.bit_capacity() * Self::PAGE_SIZE,
+            addr + page_count * PAGE_SIZE
+                <= self.ram_base + self.bitmap_alloc.bit_capacity() * PAGE_SIZE,
             "(addr + count) was after RAM"
         );
         self.bitmap_alloc
@@ -225,8 +320,8 @@ impl<const SIZE: usize> BitmapPageAlloc<SIZE> {
                 if counter % 2048 == 0 {
                     print!(".");
                 }
-                let addr = self.ram_base + i * Self::PAGE_SIZE;
-                unsafe { write_bytes(addr as *mut u64, 0xb4, Self::PAGE_SIZE / 8) };
+                let addr = self.ram_base + i * PAGE_SIZE;
+                unsafe { write_bytes(addr as *mut u64, 0xb4, PAGE_SIZE / 8) };
                 counter += 1;
             }
         }
@@ -239,9 +334,73 @@ impl<const SIZE: usize> BitmapPageAlloc<SIZE> {
 }
 
 pub fn alloc(page_count: usize) -> PageSlice {
-    unsafe {
-        #[allow(static_mut_refs)]
-        PAGE_ALLOC.alloc(page_count).unwrap()
+    PAGE_ALLOC.lock().alloc(page_count).unwrap()
+}
+
+pub struct PageBox<T> {
+    slice: PageSlice,
+    _phantom_data: PhantomData<T>,
+}
+
+impl<T> PageBox<T> {
+    pub fn new(value: T) -> Self {
+        let page_count = size_of::<T>().div_ceil(PAGE_SIZE);
+        let mut slice = alloc(page_count);
+        unsafe {
+            (slice.as_mut_ptr() as *mut T).write(value);
+        }
+        Self {
+            slice,
+            _phantom_data: PhantomData,
+        }
+    }
+
+    pub fn as_ref(&self) -> &T {
+        unsafe { &*(self.slice.as_ptr() as *const T) }
+    }
+
+    pub fn as_mut(&mut self) -> &mut T {
+        unsafe { &mut *(self.slice.as_mut_ptr() as *mut T) }
+    }
+
+    pub fn into_inner(self) -> T {
+        unsafe { (self.slice.as_ptr() as *mut T).read() }
+    }
+
+    pub fn leak(mut b: Self) -> &'static mut T {
+        let ptr = b.slice.as_mut_ptr() as *mut T;
+        mem::forget(b);
+        unsafe { &mut *ptr }
+    }
+}
+
+impl<T: FromZeros> PageBox<T> {
+    pub fn new_zeroed() -> Self {
+        let page_count = size_of::<T>().div_ceil(PAGE_SIZE);
+        let slice = PAGE_ALLOC.lock().alloc_zeroed(page_count).expect("OOM");
+        Self {
+            slice,
+            _phantom_data: PhantomData,
+        }
+    }
+}
+
+impl<T> Deref for PageBox<T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        self.as_ref()
+    }
+}
+
+impl<T> DerefMut for PageBox<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.as_mut()
+    }
+}
+
+impl<T> Drop for PageBox<T> {
+    fn drop(&mut self) {
+        unsafe { drop_in_place(self.slice.as_mut_ptr() as *mut T) }
     }
 }
 

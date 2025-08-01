@@ -1,9 +1,5 @@
 SECTIONS {
-  /*. = 0xffffff8000080000;*/ /* Raspbery Pi 3 Aarch64 (kernel8.img) load address @ highmem */
-
-  _ram_start = 0x40000000;
-  _dtb_start = 0x40000000;
-  . = 0x40100000; /* QEMU virt load address + leave space for DTB */
+  . = 0x10000000;
 
   /* start of the binary */
   .text : {
@@ -13,7 +9,8 @@ SECTIONS {
       _text_end = .;
   }
 
-  . = ALIGN(4096);
+  /* TODO: NX bit is not implemented yet */
+  /* . = ALIGN(4096); */
 
   .rodata : {
     _rodata_start = .;
@@ -37,20 +34,9 @@ SECTIONS {
     . = ALIGN(8);
     _bss_end = .;
   }
-  . = ALIGN(8);
-  .initstack (NOLOAD) : {
-    _initstack_start = .;
-    . = . + 0x2000;
-    _initstack_end = .;
-    _initstack_size = _initstack_end - _initstack_start;
-  }
 
   /* end of the binary */
   _end = ALIGN(8);
-
-  /* number of bytes in BSS section and complete binary */
-  /*__bss_length = (__bss_end - __bss_start);
-  __binary_length = (_end - _start);*/
 
   /DISCARD/ : { *(.comment) *(.gnu*) *(.note*) *(.eh_frame*) }
 }
