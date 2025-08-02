@@ -3,7 +3,8 @@
 
 mod utils;
 
-use crate::utils::{dump_hex_slice, phy_map};
+use crate::utils::{dump_hex_slice, phy_map, FmtWriteAdapter};
+use core::fmt::Write;
 use core::panic::PanicInfo;
 use core::ptr::slice_from_raw_parts;
 use kernel_api::PhyMapFlags;
@@ -25,6 +26,7 @@ pub extern "C" fn _start() -> ! {
 }
 
 #[panic_handler]
-fn rust_panic(_info: &PanicInfo) -> ! {
+fn rust_panic(info: &PanicInfo) -> ! {
+    let _ = write!(FmtWriteAdapter, "Panic: {}\n", info.message());
     loop {}
 }
