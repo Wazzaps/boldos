@@ -1,29 +1,25 @@
 #![no_std]
 #![no_main]
 
-use core::{arch::asm, panic::PanicInfo};
+mod utils;
 
-const SYS_LOG: u64 = 0x00;
-
-unsafe fn log_buf(s: &[u8]) {
-    unsafe {
-        asm!(
-            "svc #0",
-            in("x0") s.as_ptr() as u64,
-            in("x1") s.len() as u64,
-            in("x8") SYS_LOG,
-        );
-    }
-}
+use crate::utils::{dump_hex_slice, phy_map};
+use core::panic::PanicInfo;
+use core::ptr::slice_from_raw_parts;
+use kernel_api::PhyMapFlags;
 
 #[no_mangle]
 #[link_section = ".text.init"]
 pub extern "C" fn _start() -> ! {
     unsafe {
-        for _ in 0..3 {
-            log_buf(b"Hello from usermode!");
-        }
-        log_buf(b"Bye for now");
+        println!("Hello from usermode!");
+        const DTB_ADDR: u64 = 0x40000000;
+        const MAP_LEN: usize = 0x1000;
+        let dtb = phy_map(DTB_ADDR, MAP_LEN as u64, PhyMapFlags::empty()).unwrap() as *const u8;
+        println!("DTB mapped at {:?}, hexdump of first 32 bytes:", dtb);
+        let dtb = &*slice_from_raw_parts(dtb, MAP_LEN);
+        dump_hex_slice(&dtb[..32]);
+        println!();
     }
     loop {}
 }

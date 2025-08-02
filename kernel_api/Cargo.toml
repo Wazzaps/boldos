@@ -1,0 +1,8 @@
+[package]
+name = "kernel_api"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bitflags = "2.9.1"
+num_enum = { version = "0.7.4", default-features = false }

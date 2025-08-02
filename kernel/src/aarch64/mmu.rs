@@ -29,7 +29,30 @@ impl PageTable {
         Self([0; 512])
     }
 
-    pub fn get_or_alloc(&mut self, idx: usize, flags: u64) -> &mut Self {
+    pub fn get(&self, idx: usize) -> PageGetResult {
+        let raw = self.0[idx];
+        match raw {
+            0 => PageGetResult::Free,
+            raw if raw & 0b11 == PT_BLOCK => PageGetResult::Block,
+            raw => {
+                let phy_addr = PhyAddr(raw as usize & 0x7FFFFFF000);
+                PageGetResult::PageTable(unsafe { &*phy_addr.virt() })
+            }
+        }
+    }
+
+    pub fn get_mut(&mut self, idx: usize) -> PageGetMutResult {
+        match self.0[idx] {
+            0 => PageGetMutResult::Free,
+            raw if raw & PT_BLOCK != 0 => PageGetMutResult::Block,
+            raw => {
+                let phy_addr = PhyAddr(raw as usize & 0x7FFFFFF000);
+                PageGetMutResult::PageTable(unsafe { &mut *phy_addr.virt_mut() })
+            }
+        }
+    }
+
+    pub fn get_mut_or_alloc(&mut self, idx: usize, flags: u64) -> &mut Self {
         let raw = self.0[idx];
         if raw == 0 {
             // Allocate new page table
@@ -47,10 +70,12 @@ impl PageTable {
         }
     }
 
+    /// Maps a single physical page to a given virtual address
+    ///
     /// # Safety
     ///
     /// Must be called on a L0 table
-    pub fn vmap(&mut self, vaddr: usize, paddr: PhyAddr, attrs: u64) {
+    pub fn vmap_at(&mut self, vaddr: usize, paddr: PhyAddr, attrs: u64) {
         const COMMON_FLAGS: u64 = PT_PAGE | // it has the "Present" flag, which must be set, and we have area in it mapped by pages
             PT_AF; // accessed flag. Without this we're going to have a Data Abort exception
 
@@ -64,13 +89,175 @@ impl PageTable {
         assert_eq!(PAGE_SIZE, 4096); // TODO
         assert!(vaddr < 0x8000000000);
         assert_eq!(vaddr % PAGE_SIZE, 0);
-        let l1 = self.get_or_alloc(vaddr >> 39, TABLE_FLAGS);
-        let l2 = l1.get_or_alloc((vaddr >> 30) % 512, TABLE_FLAGS);
-        let l3 = l2.get_or_alloc((vaddr >> 21) % 512, TABLE_FLAGS);
+        let l1 = self.get_mut_or_alloc(vaddr >> 39, TABLE_FLAGS);
+        let l2 = l1.get_mut_or_alloc((vaddr >> 30) % 512, TABLE_FLAGS);
+        let l3 = l2.get_mut_or_alloc((vaddr >> 21) % 512, TABLE_FLAGS);
         let entry = &mut l3.0[(vaddr >> 12) % 512];
         assert_eq!(*entry, 0, "Tried to map memory (vaddr={:?} paddr={:?}) that is already occupied with entry: 0x{:016x}", vaddr, paddr, *entry);
         *entry = paddr.0 as u64 | COMMON_FLAGS | attrs;
     }
+
+    /// Maps a given physical region to an arbitrary free virtual region
+    ///
+    /// # Safety
+    ///
+    /// Must be called on a L0 table
+    pub fn vmap(&mut self, paddr: PhyAddr, size_bytes: usize, attrs: u64) -> usize {
+        assert_eq!(size_bytes % PAGE_SIZE, 0);
+        let vaddr = self
+            .find_hole(0x50000000, size_bytes)
+            .expect("Out of virtual memory space");
+        for offset in (0..size_bytes).step_by(PAGE_SIZE) {
+            self.vmap_at(vaddr + offset, PhyAddr(paddr.0 + offset), attrs);
+        }
+        vaddr
+    }
+
+    /// Finds an unallocated virtual region of the given size, with a given minimum address
+    pub fn find_hole(&self, start_vaddr: usize, size_bytes: usize) -> Option<usize> {
+        let mut current_vaddr = start_vaddr;
+        while current_vaddr < 0x8000000000 {
+            match self.measure_contiguous_region(current_vaddr, usize::MAX, size_bytes) {
+                ContiguousRegion::Allocated { len_bytes } => {
+                    current_vaddr += len_bytes;
+                }
+                ContiguousRegion::Free { len_bytes } => {
+                    if len_bytes >= size_bytes {
+                        return Some(current_vaddr);
+                    }
+                    current_vaddr += len_bytes;
+                }
+            }
+        }
+        None
+    }
+
+    /// Measure the contiguous region of virtual memory that is either allocated or free, starting
+    /// from the given virtual address.
+    ///
+    /// Stops when we've reached the end of virtual memory or the given size limit for the region type.
+    ///
+    /// # Safety
+    ///
+    /// Must be called on an L0 table
+    pub fn measure_contiguous_region(
+        &self,
+        start_vaddr: usize,
+        max_alloc_bytes: usize,
+        max_free_bytes: usize,
+    ) -> ContiguousRegion {
+        self.measure_contiguous_region_helper(start_vaddr, max_alloc_bytes, max_free_bytes, 39)
+    }
+
+    fn measure_contiguous_region_helper(
+        &self,
+        start_vaddr: usize,
+        max_alloc_bytes: usize,
+        max_free_bytes: usize,
+        addr_shift: usize,
+    ) -> ContiguousRegion {
+        assert!(addr_shift >= 21);
+        assert!(addr_shift <= 39);
+        let mut current_vaddr = start_vaddr;
+        let mut current_len = 0;
+        let mut is_allocated = false;
+        let page_size = 1 << (addr_shift - 9);
+        for idx in ((current_vaddr >> addr_shift) % 512)..512 {
+            match self.get(idx) {
+                PageGetResult::Block => {
+                    if !is_allocated && current_len != 0 {
+                        return ContiguousRegion::Free {
+                            len_bytes: current_len,
+                        };
+                    }
+                    is_allocated = true;
+                }
+                PageGetResult::Free => {
+                    if is_allocated && current_len != 0 {
+                        return ContiguousRegion::Allocated {
+                            len_bytes: current_len,
+                        };
+                    }
+                    is_allocated = false;
+                }
+                PageGetResult::PageTable(inner_table) => {
+                    assert_ne!(addr_shift, 21, "Got an inner page table at a L2 table");
+                    match inner_table.measure_contiguous_region_helper(
+                        current_vaddr,
+                        max_alloc_bytes,
+                        max_free_bytes,
+                        addr_shift - 9,
+                    ) {
+                        ContiguousRegion::Allocated { len_bytes } => {
+                            if !is_allocated && current_len != 0 {
+                                return ContiguousRegion::Free {
+                                    len_bytes: current_len,
+                                };
+                            }
+                            if len_bytes != page_size {
+                                return ContiguousRegion::Allocated {
+                                    len_bytes: current_len + len_bytes,
+                                };
+                            }
+                            is_allocated = true;
+                        }
+                        ContiguousRegion::Free { len_bytes } => {
+                            if is_allocated && current_len != 0 {
+                                return ContiguousRegion::Allocated {
+                                    len_bytes: current_len,
+                                };
+                            }
+                            if len_bytes != page_size {
+                                return ContiguousRegion::Free {
+                                    len_bytes: current_len + len_bytes,
+                                };
+                            }
+                            is_allocated = false;
+                        }
+                    }
+                }
+            }
+
+            current_len += page_size;
+            current_vaddr += page_size;
+            if is_allocated && current_len >= max_alloc_bytes {
+                return ContiguousRegion::Allocated {
+                    len_bytes: current_len,
+                };
+            } else if !is_allocated && current_len >= max_free_bytes {
+                return ContiguousRegion::Free {
+                    len_bytes: current_len,
+                };
+            }
+        }
+
+        if is_allocated {
+            ContiguousRegion::Allocated {
+                len_bytes: current_len,
+            }
+        } else {
+            ContiguousRegion::Free {
+                len_bytes: current_len,
+            }
+        }
+    }
+}
+
+pub enum ContiguousRegion {
+    Allocated { len_bytes: usize },
+    Free { len_bytes: usize },
+}
+
+pub enum PageGetResult<'a> {
+    Free,
+    PageTable(&'a PageTable),
+    Block,
+}
+
+pub enum PageGetMutResult<'a> {
+    Free,
+    PageTable(&'a mut PageTable),
+    Block,
 }
 
 static mut TABLE_L0: PageTable = PageTable([0; 512]);
