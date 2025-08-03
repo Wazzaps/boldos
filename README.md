@@ -30,7 +30,7 @@ alloc: Initializing early allocator
 - [x] Simple interrupt/exception handling
 - [x] Spawn usermode thread from an inline buffer
 - [x] Handle a log syscall
-- [ ] Memory-map the DTB to the init process
+- [x] Memory-map the DTB to the init process
 - [ ] Parse the DTB
   - [ ] Tell kernel about the memory nodes
   - [ ] Tell kernel about devices

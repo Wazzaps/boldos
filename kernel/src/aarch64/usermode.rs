@@ -1,6 +1,6 @@
 use crate::aarch64::exceptions::ExceptionContext;
 use crate::aarch64::mmu;
-use crate::aarch64::mmu::PageTable;
+use crate::aarch64::mmu::{tlb_flush, PageTable};
 use crate::drv::qemu_console::puts;
 use crate::page_alloc::{PageBox, PhyAddr, PAGE_ALLOC, PAGE_SIZE};
 use crate::println;
@@ -36,6 +36,7 @@ impl Thread {
         SPSR_EL1.set(self.spsr);
         SP_EL0.set(self.sp);
         ELR_EL1.set(self.pc);
+        tlb_flush();
         asm!("eret", options(noreturn))
     }
 }
@@ -138,16 +139,15 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
         return;
     };
     match syscall_num {
+        Syscall::Exit => {
+            todo!("Syscall::Exit not implemented")
+        }
         Syscall::Log => {
             let mut buf = [0u8; 256];
             let ptr = e.gpr[0];
             let len = e.gpr[1].min(buf.len() as u64);
             copy_from_user(ptr as usize, len as usize, &mut buf[..len as usize]);
             puts(&buf[..len as usize]);
-            // println!(
-            //     "  log: {}",
-            //     str::from_utf8(&buf[..len as usize]).unwrap().trim_end()
-            // );
         }
         Syscall::PhyMap => {
             let phy_addr = e.gpr[0];
@@ -172,6 +172,15 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                 .page_table
                 .vmap(PhyAddr(phy_addr as usize), len as usize, page_flags)
                 as u64;
+        }
+        Syscall::VirtUnmap => {
+            let virt_addr = e.gpr[0];
+            let len = e.gpr[1];
+            let thread = INIT_THREAD.as_mut();
+
+            thread.page_table.vunmap(virt_addr as usize, len as usize);
+
+            e.gpr[0] = 0;
         }
     }
 }

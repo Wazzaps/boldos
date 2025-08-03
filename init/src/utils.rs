@@ -2,6 +2,17 @@ use core::arch::asm;
 use kernel_api::{KError, PhyMapFlags, Syscall};
 use num_enum::FromPrimitive;
 
+pub unsafe fn exit(code: u32) -> ! {
+    unsafe {
+        asm!(
+        "svc #0",
+        in("x0") code as u64,
+        in("x8") Syscall::Exit as u64,
+        options(noreturn),
+        )
+    }
+}
+
 pub unsafe fn log_buf(s: &[u8]) {
     unsafe {
         asm!(
@@ -13,13 +24,18 @@ pub unsafe fn log_buf(s: &[u8]) {
     }
 }
 
-pub unsafe fn phy_map(phy_addr: u64, len: u64, flags: PhyMapFlags) -> Result<*const (), KError> {
+pub unsafe fn phy_map(
+    phy_addr: usize,
+    len: usize,
+    flags: PhyMapFlags,
+) -> Result<*const (), KError> {
     let mut virt_addr: u64;
     unsafe {
         asm!(
-        "svc #0",
-        in("x0") phy_addr,
-        in("x1") len,
+        "svc #0
+        dmb ish",
+        in("x0") phy_addr as u64,
+        in("x1") len as u64,
         in("x2") flags.bits(),
         in("x8") Syscall::PhyMap as u64,
         lateout("x0") virt_addr,
@@ -29,6 +45,25 @@ pub unsafe fn phy_map(phy_addr: u64, len: u64, flags: PhyMapFlags) -> Result<*co
         Err(KError::from_primitive(virt_addr as i32))
     } else {
         Ok(virt_addr as _)
+    }
+}
+
+pub unsafe fn virt_unmap(virt_addr: *const (), len: usize) -> Result<(), KError> {
+    let mut res: i64;
+    unsafe {
+        asm!(
+        "dmb ish
+        svc #0",
+        in("x0") virt_addr as u64,
+        in("x1") len as u64,
+        in("x8") Syscall::VirtUnmap as u64,
+        lateout("x0") res,
+        );
+    }
+    if res < 0 {
+        Err(KError::from_primitive(res as i32))
+    } else {
+        Ok(())
     }
 }
 

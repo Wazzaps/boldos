@@ -1,9 +1,10 @@
 use core::mem::size_of;
 
+static mut UART0_ADDR: *mut u8 = 0x9000000 as *mut u8;
+
 pub fn putc(ch: u8) {
     unsafe {
-        const UART0: *mut u8 = 0x9000000 as *mut u8;
-        UART0.write_volatile(ch);
+        UART0_ADDR.write_volatile(ch);
     }
 }
 
@@ -73,4 +74,11 @@ pub fn dump_hex_slice(val: &[u8]) {
         }
     }
     println!();
+}
+
+pub fn eject_lowmem() {
+    unsafe {
+        let new_value = (UART0_ADDR as u64) | 0xffff_ff00_0000_0000;
+        UART0_ADDR = new_value as *mut u8;
+    }
 }

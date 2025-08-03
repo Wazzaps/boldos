@@ -5,8 +5,10 @@ use num_enum::{FromPrimitive, IntoPrimitive, TryFromPrimitive};
 #[derive(TryFromPrimitive, IntoPrimitive, Eq, PartialEq, Copy, Clone, Debug)]
 #[repr(u32)]
 pub enum Syscall {
-    Log = 0,
-    PhyMap = 1,
+    Exit = 0,
+    Log = 1,
+    PhyMap = 2,
+    VirtUnmap = 3,
 }
 
 #[derive(FromPrimitive, IntoPrimitive, Eq, PartialEq, Copy, Clone, Debug)]

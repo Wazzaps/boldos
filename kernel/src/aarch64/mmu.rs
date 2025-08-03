@@ -44,7 +44,7 @@ impl PageTable {
     pub fn get_mut(&mut self, idx: usize) -> PageGetMutResult {
         match self.0[idx] {
             0 => PageGetMutResult::Free,
-            raw if raw & PT_BLOCK != 0 => PageGetMutResult::Block,
+            raw if raw & 0b11 == PT_BLOCK => PageGetMutResult::Block,
             raw => {
                 let phy_addr = PhyAddr(raw as usize & 0x7FFFFFF000);
                 PageGetMutResult::PageTable(unsafe { &mut *phy_addr.virt_mut() })
@@ -60,7 +60,10 @@ impl PageTable {
             let new_table = PageBox::leak(PageBox::<PageTable>::new_zeroed());
             let phy_addr = PhyAddr::from_virt(new_table);
             #[cfg(feature = "log_mmu")]
-            println!("  mmu: Allocated PT at {:?}", phy_addr);
+            println!(
+                "  mmu: Allocated PT at {:?}, storing in 0x{:x}[{}]",
+                phy_addr, &self.0 as *const u64 as u64, idx
+            );
             self.0[idx] = phy_addr.0 as u64 | flags;
             new_table
         } else {
@@ -95,6 +98,42 @@ impl PageTable {
         let entry = &mut l3.0[(vaddr >> 12) % 512];
         assert_eq!(*entry, 0, "Tried to map memory (vaddr={:?} paddr={:?}) that is already occupied with entry: 0x{:016x}", vaddr, paddr, *entry);
         *entry = paddr.0 as u64 | COMMON_FLAGS | attrs;
+
+        // TODO: unsafe { asm!("tlbi VAAE1, {}", in(reg) (vaddr as u64) >> 12) };
+        tlb_flush();
+    }
+
+    fn vunmap_single(&mut self, vaddr: usize) {
+        #[cfg(feature = "log_mmu")]
+        println!("  mmu: Unmapping 0x{:x}", vaddr);
+        assert_eq!(PAGE_SIZE, 4096); // TODO
+        assert!(vaddr < 0x8000000000);
+        assert_eq!(vaddr % PAGE_SIZE, 0);
+        match self.get_mut(vaddr >> 39) {
+            PageGetMutResult::Free => return,
+            PageGetMutResult::PageTable(l1) => match l1.get_mut((vaddr >> 30) % 512) {
+                PageGetMutResult::Free => return,
+                PageGetMutResult::PageTable(l2) => match l2.get_mut((vaddr >> 21) % 512) {
+                    PageGetMutResult::Free => return,
+                    PageGetMutResult::PageTable(l3) => {
+                        l3.0[(vaddr >> 12) % 512] = 0;
+                        // TODO: unsafe { asm!("tlbi VAAE1, {}", in(reg) (vaddr as u64) >> 12) };
+                        tlb_flush();
+                        // TODO: l1-l2 tables are leaked
+                    }
+                    PageGetMutResult::Block => todo!("Splitting L2 blocks is not implemented"),
+                },
+                PageGetMutResult::Block => todo!("Splitting L1 blocks is not implemented"),
+            },
+            PageGetMutResult::Block => todo!("Splitting L0 blocks is not implemented"),
+        }
+    }
+
+    // TODO: This is inefficient
+    pub fn vunmap(&mut self, vaddr: usize, size_bytes: usize) {
+        for offset in (0..size_bytes).step_by(PAGE_SIZE) {
+            self.vunmap_single(vaddr + offset);
+        }
     }
 
     /// Maps a given physical region to an arbitrary free virtual region
@@ -156,8 +195,8 @@ impl PageTable {
         max_free_bytes: usize,
         addr_shift: usize,
     ) -> ContiguousRegion {
-        assert!(addr_shift >= 21);
-        assert!(addr_shift <= 39);
+        assert!(addr_shift >= 12, "addr_shift(={addr_shift}) < 12");
+        assert!(addr_shift <= 39, "addr_shift(={addr_shift}) > 39");
         let mut current_vaddr = start_vaddr;
         let mut current_len = 0;
         let mut is_allocated = false;
@@ -181,7 +220,7 @@ impl PageTable {
                     is_allocated = false;
                 }
                 PageGetResult::PageTable(inner_table) => {
-                    assert_ne!(addr_shift, 21, "Got an inner page table at a L2 table");
+                    assert_ne!(addr_shift, 12, "Got an inner page table at a L3 table");
                     match inner_table.measure_contiguous_region_helper(
                         current_vaddr,
                         max_alloc_bytes,
@@ -342,7 +381,22 @@ pub unsafe fn eject_lowmem() {
         mov sp, {1}
     ", in(reg) 0xffff_ff00_0000_0000u64, out(reg) _);
 
-    // TODO: Disable the low-mem stack
-    // TTBR0_EL1.set(0);
-    // asm!("isb");
+    crate::drv::qemu_console::eject_lowmem();
+
+    // Disable the low-mem stack
+    TTBR0_EL1.set(0);
+    tlb_flush();
+}
+
+pub fn tlb_flush() {
+    unsafe {
+        asm!(
+            "
+            dsb ishst
+            tlbi vmalle1is
+            dsb ish
+            isb
+            "
+        )
+    }
 }
