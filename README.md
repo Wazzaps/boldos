@@ -14,10 +14,18 @@ $ cargo run
 --- BoldOS ---
 alloc: Initializing early allocator
  user: Starting usermode
-  log: Hello from usermode!
-  log: Hello from usermode!
-  log: Hello from usermode!
-  log: Bye for now
+Hello from usermode!
+DTB mapped at 0x50200000, hexdump of first 32 bytes:
+d00dfeed 00100000 00000040 00001db4 00000030 00000011 00000010 00000000 
+
+Boot args: "placeholder kernel params"
+RAM: 0p40000000 (268435456 bytes)
+Allocating big buffer using newly discovered memory
+10MB Buffer at 0x50400000
+bye for now...
+[PANIC]: not yet implemented: Syscall::Exit not implemented
+location: src/aarch64/usermode.rs:143:13
+
 ```
 
 ## Who needs Jira when you have a todo list
@@ -31,8 +39,9 @@ alloc: Initializing early allocator
 - [x] Spawn usermode thread from an inline buffer
 - [x] Handle a log syscall
 - [x] Memory-map the DTB to the init process
-- [ ] Parse the DTB
-  - [ ] Tell kernel about the memory nodes
+- [x] Virtual page allocator
+- [x] Parse the DTB
+  - [x] Tell kernel about the memory nodes
   - [ ] Tell kernel about devices
 - [ ] Thread sleeping + cpu idling (timer interrupts)
 

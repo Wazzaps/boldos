@@ -18,6 +18,7 @@ walkdir = "2.5.0"
 [features]
 # Enabled debug logging in mmu code
 log_mmu = []
+log_alloc = []
 
 [profile.dev]
 panic = "abort"

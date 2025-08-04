@@ -2,13 +2,12 @@
 #![no_main]
 
 use crate::aarch64::mmu::eject_lowmem;
-use crate::page_alloc::{PhyAddr, PAGE_ALLOC, PAGE_ALLOC_PAGES, PAGE_SIZE};
+use crate::page_alloc::PhyAddr;
 use aarch64::{mmu, usermode};
 use aarch64_cpu::registers::CurrentEL;
 use core::arch::asm;
 use core::fmt::Write;
 use core::panic::PanicInfo;
-use elain::Align;
 use tock_registers::interfaces::Readable;
 
 pub mod aarch64;
@@ -36,31 +35,12 @@ pub unsafe extern "C" fn kmain_nommu() -> ! {
     himem_func(kmain)();
 }
 
-const EARLY_HEAP_SIZE: usize = 1024 * 1024;
-
-struct EarlyHeap {
-    _align: Align<PAGE_SIZE>,
-    #[allow(dead_code)]
-    data: [u8; EARLY_HEAP_SIZE],
-}
-
-static mut EARLY_HEAP: EarlyHeap = EarlyHeap {
-    _align: Align::NEW,
-    data: [0; EARLY_HEAP_SIZE],
-};
-
 #[no_mangle]
 pub unsafe extern "C" fn kmain() -> ! {
     eject_lowmem();
     println!("--- BoldOS ---");
     println!("alloc: Initializing early allocator");
-    {
-        let mut page_alloc = PAGE_ALLOC.lock();
-        let heap_base = &raw const EARLY_HEAP as usize;
-        unsafe { page_alloc.rebase(heap_base) };
-        page_alloc.mark_allocated(heap_base, PAGE_ALLOC_PAGES);
-        page_alloc.free(heap_base, EARLY_HEAP_SIZE / PAGE_SIZE);
-    }
+    page_alloc::init_early_heap();
     usermode::start();
     println!("Sleeping forever");
     loop {
@@ -70,9 +50,10 @@ pub unsafe extern "C" fn kmain() -> ! {
 
 #[panic_handler]
 fn rust_panic(info: &PanicInfo) -> ! {
-    print!("[PANIC]: ");
-    let _ = write!(drv::qemu_console::FmtWriteAdapter, "{}", info.message());
-    print!("\n");
+    println!("[PANIC]: {}", info.message());
+    if let Some(location) = info.location() {
+        println!("location: {}", location);
+    }
 
     loop {
         unsafe { asm!("wfi") }

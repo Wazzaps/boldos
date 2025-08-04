@@ -1,5 +1,5 @@
 use core::arch::asm;
-use kernel_api::{KError, PhyMapFlags, Syscall};
+use kernel_api::{KError, PhyMapFlags, Syscall, VirtMapFlags};
 use num_enum::FromPrimitive;
 
 pub unsafe fn exit(code: u32) -> ! {
@@ -48,6 +48,25 @@ pub unsafe fn phy_map(
     }
 }
 
+pub unsafe fn virt_map(len: usize, flags: VirtMapFlags) -> Result<*const (), KError> {
+    let mut virt_addr: u64;
+    unsafe {
+        asm!(
+        "dmb ish
+        svc #0",
+        in("x0") len as u64,
+        in("x1") flags.bits(),
+        in("x8") Syscall::VirtMap as u64,
+        lateout("x0") virt_addr,
+        );
+    }
+    if (virt_addr as i64) < 0 {
+        Err(KError::from_primitive(virt_addr as i32))
+    } else {
+        Ok(virt_addr as _)
+    }
+}
+
 pub unsafe fn virt_unmap(virt_addr: *const (), len: usize) -> Result<(), KError> {
     let mut res: i64;
     unsafe {
@@ -57,6 +76,24 @@ pub unsafe fn virt_unmap(virt_addr: *const (), len: usize) -> Result<(), KError>
         in("x0") virt_addr as u64,
         in("x1") len as u64,
         in("x8") Syscall::VirtUnmap as u64,
+        lateout("x0") res,
+        );
+    }
+    if res < 0 {
+        Err(KError::from_primitive(res as i32))
+    } else {
+        Ok(())
+    }
+}
+
+pub unsafe fn download_more_ram(phy_addr: usize, len: usize) -> Result<(), KError> {
+    let mut res: i64;
+    unsafe {
+        asm!(
+        "svc #0",
+        in("x0") phy_addr as u64,
+        in("x1") len as u64,
+        in("x8") Syscall::DownloadMoreRam as u64,
         lateout("x0") res,
         );
     }

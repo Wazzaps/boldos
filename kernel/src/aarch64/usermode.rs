@@ -2,13 +2,13 @@ use crate::aarch64::exceptions::ExceptionContext;
 use crate::aarch64::mmu;
 use crate::aarch64::mmu::{tlb_flush, PageTable};
 use crate::drv::qemu_console::puts;
-use crate::page_alloc::{PageBox, PhyAddr, PAGE_ALLOC, PAGE_SIZE};
-use crate::println;
+use crate::page_alloc::{add_memory_node, PageBox, PageSlice, PhyAddr, PAGE_ALLOC, PAGE_SIZE};
+use crate::{page_alloc, println};
 use aarch64_cpu::registers::{ELR_EL1, SPSR_EL1, SP_EL0, TTBR0_EL1};
 use core::arch::asm;
 use core::cell::UnsafeCell;
-use core::mem::MaybeUninit;
-use kernel_api::{PhyMapFlags, Syscall};
+use core::mem::{forget, MaybeUninit};
+use kernel_api::{PhyMapFlags, Syscall, VirtMapFlags};
 use tock_registers::interfaces::Writeable;
 use zerocopy::FromZeros;
 
@@ -156,7 +156,6 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
             let thread = INIT_THREAD.as_mut();
 
             let mut page_flags: u64 = mmu::PT_ISH; // inner shareable
-
             if flags.contains(PhyMapFlags::ReadWrite) {
                 page_flags |= mmu::PT_RW_EL0;
             } else {
@@ -173,6 +172,24 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                 .vmap(PhyAddr(phy_addr as usize), len as usize, page_flags)
                 as u64;
         }
+        Syscall::VirtMap => {
+            let len = e.gpr[0];
+            let flags = VirtMapFlags::from_bits_truncate(e.gpr[1]);
+            let thread = INIT_THREAD.as_mut();
+
+            let mut page_flags: u64 = mmu::PT_ISH | mmu::PT_MEM; // inner shareable
+            if flags.contains(VirtMapFlags::ReadWrite) {
+                page_flags |= mmu::PT_RW_EL0;
+            } else {
+                page_flags |= mmu::PT_RO_EL0;
+            }
+
+            // TODO: support fragmented physical memory
+            let page_slice = page_alloc::alloc(len.div_ceil(PAGE_SIZE as u64) as usize);
+            let phy_addr = PhyAddr::from_virt(page_slice.as_ptr());
+            e.gpr[0] = thread.page_table.vmap(phy_addr, len as usize, page_flags) as u64;
+            forget(page_slice); // Don't free the memory we just allocated
+        }
         Syscall::VirtUnmap => {
             let virt_addr = e.gpr[0];
             let len = e.gpr[1];
@@ -180,7 +197,14 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
 
             thread.page_table.vunmap(virt_addr as usize, len as usize);
 
+            // TODO: if within range of ram, free the corresponding PageSlice
+
             e.gpr[0] = 0;
+        }
+        Syscall::DownloadMoreRam => {
+            let phy_addr = e.gpr[0];
+            let len = e.gpr[1];
+            add_memory_node(PhyAddr(phy_addr as usize), len as usize);
         }
     }
 }

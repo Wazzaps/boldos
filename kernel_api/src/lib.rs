@@ -8,7 +8,9 @@ pub enum Syscall {
     Exit = 0,
     Log = 1,
     PhyMap = 2,
-    VirtUnmap = 3,
+    VirtMap = 3,
+    VirtUnmap = 4,
+    DownloadMoreRam = 5,
 }
 
 #[derive(FromPrimitive, IntoPrimitive, Eq, PartialEq, Copy, Clone, Debug)]
@@ -32,5 +34,8 @@ bitflags! {
     pub struct PhyMapFlags: u64 {
         const ReadWrite = 1 << 0;
         const DeviceMem = 1 << 1;
+    }
+    pub struct VirtMapFlags: u64 {
+        const ReadWrite = 1 << 0;
     }
 }

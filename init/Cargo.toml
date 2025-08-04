@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 kernel_api = { path = "../kernel_api" }
 num_enum = { version = "0.7.4", default-features = false }
+fdt-rs = { version = "0.4.5", default-features = false }
 
 [profile.dev]
 panic = "abort"

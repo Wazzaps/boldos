@@ -1,8 +1,8 @@
-use core::arch::asm;
-
 use crate::page_alloc::{PageBox, PhyAddr, PAGE_SIZE};
 use aarch64_cpu::registers::{ReadWriteable, Writeable, VBAR_EL1};
 use aarch64_cpu::registers::{MAIR_EL1, SCTLR_EL1, TCR_EL1, TTBR0_EL1, TTBR1_EL1};
+use core::arch::asm;
+use core::fmt::{Debug, Formatter};
 use tock_registers::interfaces::Readable;
 use zerocopy::FromZeros;
 
@@ -195,14 +195,27 @@ impl PageTable {
         max_free_bytes: usize,
         addr_shift: usize,
     ) -> ContiguousRegion {
-        assert!(addr_shift >= 12, "addr_shift(={addr_shift}) < 12");
+        // L0       L1     L2     Page
+        // 512GB -> 1GB -> 2MB -> 4KB
+        assert!(addr_shift >= 21, "addr_shift(={addr_shift}) < 21");
         assert!(addr_shift <= 39, "addr_shift(={addr_shift}) > 39");
         let mut current_vaddr = start_vaddr;
         let mut current_len = 0;
         let mut is_allocated = false;
         let page_size = 1 << (addr_shift - 9);
         for idx in ((current_vaddr >> addr_shift) % 512)..512 {
-            match self.get(idx) {
+            let result = if addr_shift != 21 {
+                // L0-L1 table
+                self.get(idx)
+            } else {
+                // L2 table
+                if self.0[idx] == 0 {
+                    PageGetResult::Free
+                } else {
+                    PageGetResult::Block
+                }
+            };
+            match result {
                 PageGetResult::Block => {
                     if !is_allocated && current_len != 0 {
                         return ContiguousRegion::Free {
@@ -221,6 +234,9 @@ impl PageTable {
                 }
                 PageGetResult::PageTable(inner_table) => {
                     assert_ne!(addr_shift, 12, "Got an inner page table at a L3 table");
+
+                    let max_expected_size =
+                        (512 - ((current_vaddr >> (addr_shift - 9)) % 512)) * (page_size / 512);
                     match inner_table.measure_contiguous_region_helper(
                         current_vaddr,
                         max_alloc_bytes,
@@ -233,7 +249,7 @@ impl PageTable {
                                     len_bytes: current_len,
                                 };
                             }
-                            if len_bytes != page_size {
+                            if len_bytes != max_expected_size {
                                 return ContiguousRegion::Allocated {
                                     len_bytes: current_len + len_bytes,
                                 };
@@ -246,7 +262,7 @@ impl PageTable {
                                     len_bytes: current_len,
                                 };
                             }
-                            if len_bytes != page_size {
+                            if len_bytes != max_expected_size {
                                 return ContiguousRegion::Free {
                                     len_bytes: current_len + len_bytes,
                                 };
@@ -282,11 +298,18 @@ impl PageTable {
     }
 }
 
+impl Debug for PageTable {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        write!(f, "PageTable@{:?}", self as *const PageTable)
+    }
+}
+
 pub enum ContiguousRegion {
     Allocated { len_bytes: usize },
     Free { len_bytes: usize },
 }
 
+#[derive(Debug)]
 pub enum PageGetResult<'a> {
     Free,
     PageTable(&'a PageTable),
