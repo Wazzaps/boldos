@@ -4,12 +4,13 @@ use crate::aarch64::mmu::{tlb_flush, PageTable};
 use crate::drv::arm_gic::{timer_get_absolute_time_ms, timer_set_timeout};
 use crate::drv::qemu_console::puts;
 use crate::page_alloc::{add_memory_node, PageBox, PhyAddr, PAGE_ALLOC, PAGE_SIZE};
-use crate::{page_alloc, println};
+use crate::{drv, page_alloc, println};
 use aarch64_cpu::registers::{ELR_EL1, SPSR_EL1, SP_EL0, TTBR0_EL1};
 use core::arch::asm;
 use core::cell::UnsafeCell;
 use core::mem::{forget, MaybeUninit};
-use kernel_api::{KError, KernelDeviceRequest, MemMapFlags, PhyMapFlags, Syscall};
+use kernel_api::kernel_device::KernelDeviceId;
+use kernel_api::{kernel_device, KError, MemMapFlags, PhyMapFlags, Syscall};
 use tock_registers::interfaces::Writeable;
 use zerocopy::{FromZeros, IntoBytes};
 
@@ -208,21 +209,33 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
             add_memory_node(PhyAddr(phy_addr as usize), len as usize);
         }
         Syscall::LoadKernelDevice => {
-            let mut buf = KernelDeviceRequest::new_zeroed();
             let ptr = e.gpr[0];
             let len = e.gpr[1];
-            {
-                let buf = buf.as_mut_bytes();
-                if len != buf.len() as u64 {
-                    e.gpr[0] = KError::InvalidArgument.into();
-                    return;
-                }
-                copy_from_user(ptr as usize, len as usize, buf);
+            let dev_id = e.gpr[2];
+
+            if dev_id == kernel_device::GicAndTimer::ID as u64 {
+                let mut gic_and_timer = kernel_device::GicAndTimer::new_zeroed();
+                assert_eq!(
+                    len,
+                    size_of_val(&gic_and_timer) as u64,
+                    "Invalid length for GicAndTimer"
+                );
+                copy_from_user(ptr as usize, len as usize, gic_and_timer.as_mut_bytes());
+                println!(" user: LoadKernelDevice: {:?}", gic_and_timer);
+
+                drv::arm_gic::timer_clear();
+                drv::arm_gic::init_gic(
+                    gic_and_timer.gicd_base as usize,
+                    gic_and_timer.gicc_base as usize,
+                    gic_and_timer.timer_ppi_interrupt,
+                );
+
+                e.gpr[0] = 0;
+                return;
+            } else {
+                e.gpr[0] = KError::InvalidArgument.into();
+                return;
             }
-
-            println!(" user: LoadKernelDevice: {:?}", buf);
-
-            e.gpr[0] = 0;
         }
         Syscall::SleepSec => {
             let sec = e.gpr[0];

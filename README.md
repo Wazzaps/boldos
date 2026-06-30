@@ -22,9 +22,15 @@ Boot args: "placeholder kernel params"
 RAM: 0p40000000 (268435456 bytes)
 Allocating big buffer using newly discovered memory
 10MB Buffer at 0x50400000
+Extracting timer information from DTB
+ user: LoadKernelDevice: GicAndTimer { gicd_base: 134217728, gicc_base: 134283264, timer_ppi_interrupt: 30, _padding: 0 }
+  drv: Initializing ARM GIC
 bye for now...
-[PANIC]: not yet implemented: Syscall::Exit not implemented
-location: src/aarch64/usermode.rs:143:13
+ user: Sleeping for 1 seconds
+  irq: Timer Ticked!
+ user: Sleeping for 1 seconds
+  irq: Timer Ticked!
+ user: Sleeping for 1 seconds
 
 ```
 
@@ -47,6 +53,9 @@ location: src/aarch64/usermode.rs:143:13
 
 ### Milestone 2: We're getting somewhere
 
+- [x] Simple drivers from kernelmode
+  - [x] ARM GIC
+  - [x] ARM Arch Timer
 - [ ] Simple drivers from usermode
   - [ ] Monotonic Time 
   - [ ] QEMU fw_cfg

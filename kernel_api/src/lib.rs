@@ -1,7 +1,7 @@
 #![no_std]
 use bitflags::bitflags;
+use core::fmt::Debug;
 use num_enum::{FromPrimitive, IntoPrimitive, TryFromPrimitive};
-use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 #[derive(TryFromPrimitive, IntoPrimitive, Eq, PartialEq, Copy, Clone, Debug)]
 #[repr(u32)]
@@ -32,17 +32,30 @@ impl Into<u64> for KError {
     }
 }
 
-#[derive(TryFromPrimitive, IntoPrimitive, Eq, PartialEq, Copy, Clone, Debug)]
-#[repr(u32)]
-pub enum KernelDeviceType {
-    Invalid = 0,
-    Timer = 1,
-}
+pub mod kernel_device {
+    use zerocopy::{FromBytes, IntoBytes};
 
-#[derive(Debug, FromBytes, IntoBytes, Immutable)]
-#[repr(C)]
-pub struct KernelDeviceRequest {
-    pub dev_type: u32, // KernelDeviceType
+    pub trait KernelDeviceId {
+        const ID: u32;
+    }
+
+    // const GIC_AND_TIMER_PPI_INTERRUPT: u32 = 1 << 0;
+
+    #[derive(Debug, FromBytes, IntoBytes)]
+    #[repr(C)]
+    pub struct GicAndTimer {
+        pub gicd_base: u64,
+        // pub gicd_size: u64,
+        pub gicc_base: u64,
+        pub timer_ppi_interrupt: u32,
+        // pub gicc_size: u64,
+        // pub flags: u32,
+        pub _padding: u32,
+    }
+
+    impl KernelDeviceId for GicAndTimer {
+        const ID: u32 = 1;
+    }
 }
 
 bitflags! {

@@ -1,16 +1,13 @@
-use core::{
-    arch::asm,
-    ptr::{read_volatile, write_volatile},
-};
-
 use crate::{page_alloc::PhyAddr, println};
+use core::arch::asm;
+use core::ptr::{read_volatile, write_volatile};
 
-const GICD_BASE: usize = 0x08000000;
-const GICC_BASE: usize = 0x08010000;
+static mut GICD_BASE: usize = 0;
+static mut GICC_BASE: usize = 0;
 
 const GICD_CTLR: usize = 0x000;
 const GICD_ISENABLER0: usize = 0x100;
-const GICD_IPRIORITYR7: usize = 0x41C; // (30 / 4) * 4 = 0x41C
+const GICD_IPRIORITYR0: usize = 0x400;
 
 const GICC_CTLR: usize = 0x000;
 const GICC_PMR: usize = 0x004;
@@ -25,40 +22,53 @@ unsafe fn mmio_read(base: usize, offset: usize) -> u32 {
     read_volatile(PhyAddr(base + offset).virt_dev::<u32>())
 }
 
-pub unsafe fn init_gic() {
+pub unsafe fn init_gic(gicd_base: usize, gicc_base: usize, timer_ppi_interrupt: u32) {
+    (&raw mut GICD_BASE).write(gicd_base);
+    (&raw mut GICC_BASE).write(gicc_base);
     println!("  drv: Initializing ARM GIC");
 
     // -- distributor setup --
 
     // Disable distributor during configuration
-    mmio_write(GICD_BASE, GICD_CTLR, 0);
+    mmio_write(gicd_base, GICD_CTLR, 0);
 
-    // Configure PPI 30 (Non-Secure Physical Timer)
-    // Enable register 0 handles IRQs 0-31. Set bit 30.
-    let enable_bits = mmio_read(GICD_BASE, GICD_ISENABLER0);
-    mmio_write(GICD_BASE, GICD_ISENABLER0, enable_bits | (1 << 30));
+    // Enable the timer PPI
+    let reg_idx = timer_ppi_interrupt as usize / 32;
+    let interrupt_enable_reg = GICD_ISENABLER0 + (reg_idx * 4);
+    let interrupt_enable_shift = timer_ppi_interrupt % 32;
+    let enable_bits = mmio_read(gicd_base, interrupt_enable_reg);
+    mmio_write(
+        gicd_base,
+        interrupt_enable_reg,
+        enable_bits | (1 << interrupt_enable_shift),
+    );
 
-    // Set priority for ID 30 to a default value (e.g., 0xA0)
-    // ID 30 is the 3rd byte inside IPRIORITYR7 (byte offset 2)
-    let mut priority = mmio_read(GICD_BASE, GICD_IPRIORITYR7);
-    priority &= !(0xFF << 16); // Clear old priority
-    priority |= 0xA0 << 16; // Set new priority
-    mmio_write(GICD_BASE, GICD_IPRIORITYR7, priority);
+    // Set priority for the timer PPI to a default value (e.g., 0xA0)
+    let reg_idx = timer_ppi_interrupt as usize / 4;
+    let interrupt_priority_reg = GICD_IPRIORITYR0 + (reg_idx * 4);
+    let interrupt_priority_shift = (timer_ppi_interrupt % 4) * 8;
+    let mut priority = mmio_read(gicd_base, interrupt_priority_reg);
+    priority &= !(0xFF << interrupt_priority_shift); // Clear old priority
+    priority |= 0xA0 << interrupt_priority_shift; // Set new priority
+    mmio_write(gicd_base, interrupt_priority_reg, priority);
 
     // Enable distributor (Group 1 / Non-Secure interrupts)
-    mmio_write(GICD_BASE, GICD_CTLR, 1);
+    mmio_write(gicd_base, GICD_CTLR, 1);
 
     // -- cpu interface setup --
     // TODO: per core
 
     // Allow all interrupts with priorities higher than 0xF0
-    mmio_write(GICC_BASE, GICC_PMR, 0xF0);
+    mmio_write(gicc_base, GICC_PMR, 0xF0);
 
     // Enable the CPU interface signaling
-    mmio_write(GICC_BASE, GICC_CTLR, 1);
+    mmio_write(gicc_base, GICC_CTLR, 1);
 }
 
 pub unsafe fn timer_set_timeout(ms: u64) {
+    let gicc_base = (&raw const GICC_BASE).read();
+    assert_ne!(gicc_base, 0, "GIC must be initialized before sleeping");
+
     let freq: u64;
     // Read the system counter frequency (Hz)
     asm!("mrs {}, cntfrq_el0", out(reg) freq);
@@ -92,8 +102,10 @@ pub fn timer_get_absolute_time_ms() -> u64 {
 }
 
 pub unsafe fn handle_irq() {
+    let gicc_base = (&raw const GICC_BASE).read();
+
     // Read Interrupt Acknowledge Register
-    let iar = mmio_read(GICC_BASE, GICC_IAR);
+    let iar = mmio_read(gicc_base, GICC_IAR);
     let interrupt_id = iar & 0x3FF; // Mask out CPU ID fields (bits 10-12)
 
     // Route the interrupt based on ID
@@ -102,23 +114,21 @@ pub unsafe fn handle_irq() {
             // Non-Secure Physical Timer
             println!("  irq: Timer Ticked!");
 
-            // CRITICAL: The arch timer is level-triggered.
-            // We must mask or update the timer hardware *before* updating the GIC.
-            // timer_clear();
+            // Clear the timer interrupt so it stops triggering
+            timer_clear();
 
-            // Schedule next event (e.g., 1000ms later)
-            timer_set_timeout(1000);
+            // TODO: Schedule next event
         }
         1023 => {
-            // Spurious interrupt indicator; ignore safely.
+            // Spurious interrupt
             return;
         }
         _ => {
-            println!("Unhandled interrupt ID: {}", interrupt_id);
+            println!("Unhandled interrupt ID: {interrupt_id}");
         }
     }
 
     // Signal End of Interrupt (EOI) to the GIC CPU Interface
     // This tells the GIC we are done processing this priority layer.
-    mmio_write(GICC_BASE, GICC_EOIR, iar);
+    mmio_write(gicc_base, GICC_EOIR, iar);
 }

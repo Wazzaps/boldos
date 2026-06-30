@@ -41,8 +41,6 @@ pub unsafe extern "C" fn kmain() -> ! {
     println!("--- BoldOS ---");
     println!("alloc: Initializing early allocator");
     page_alloc::init_early_heap();
-    drv::arm_gic::init_gic();
-    drv::arm_gic::timer_clear();
     interrupts::enable();
     usermode::start();
     println!("Sleeping forever");

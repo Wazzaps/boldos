@@ -1,5 +1,5 @@
 use core::arch::asm;
-use kernel_api::{KError, MemMapFlags, PhyMapFlags, Syscall};
+use kernel_api::{kernel_device, KError, MemMapFlags, PhyMapFlags, Syscall};
 use num_enum::FromPrimitive;
 
 pub unsafe fn exit(code: u32) -> ! {
@@ -104,13 +104,18 @@ pub unsafe fn download_more_ram(phy_addr: usize, len: usize) -> Result<(), KErro
     }
 }
 
-pub unsafe fn load_kernel_device(req_buf: &[u8]) -> Result<(), KError> {
+pub unsafe fn load_kernel_device<T: kernel_device::KernelDeviceId + Sized>(
+    req: &T,
+) -> Result<(), KError> {
+    let req_ptr = req as *const _;
+    let req_len = size_of_val(req);
     let mut res: i64;
     unsafe {
         asm!(
         "svc #0",
-        in("x0") req_buf.as_ptr() as u64,
-        in("x1") req_buf.len() as u64,
+        in("x0") req_ptr as u64,
+        in("x1") req_len as u64,
+        in("x2") T::ID as u64,
         in("x8") Syscall::LoadKernelDevice as u64,
         lateout("x0") res,
         );
