@@ -6,7 +6,6 @@ use crate::page_alloc::PhyAddr;
 use aarch64::{mmu, usermode};
 use aarch64_cpu::registers::CurrentEL;
 use core::arch::asm;
-use core::fmt::Write;
 use core::panic::PanicInfo;
 use tock_registers::interfaces::Readable;
 

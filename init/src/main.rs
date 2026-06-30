@@ -4,15 +4,16 @@
 mod utils;
 
 use crate::utils::{
-    download_more_ram, dump_hex_slice, exit, phy_map, virt_map, virt_unmap, FmtWriteAdapter,
+    FmtWriteAdapter, download_more_ram, dump_hex_slice, exit, load_kernel_device, mem_map, mem_unmap, phy_map,
 };
-use core::fmt::Write;
 use core::panic::PanicInfo;
 use core::ptr::slice_from_raw_parts;
 use fdt_rs::base::DevTree;
 use fdt_rs::error::DevTreeError;
 use fdt_rs::prelude::{FallibleIterator, PropReader};
-use kernel_api::{PhyMapFlags, VirtMapFlags};
+use kernel_api::{KernelDeviceRequest, KernelDeviceType, MemMapFlags, PhyMapFlags};
+use zerocopy::IntoBytes;
+use core::fmt::Write;
 
 fn map_dtb() -> Result<DevTree<'static>, DevTreeError> {
     unsafe {
@@ -28,7 +29,7 @@ fn map_dtb() -> Result<DevTree<'static>, DevTreeError> {
             }
             dtb_len
         };
-        virt_unmap(dtb as _, MAP_LEN).unwrap();
+        mem_unmap(dtb as _, MAP_LEN).unwrap();
 
         // Map the whole DTB
         let dtb = phy_map(DTB_ADDR, dtb_len, PhyMapFlags::empty()).unwrap() as *const u8;
@@ -76,6 +77,28 @@ fn find_mem_nodes(dtb: &DevTree) -> Result<(), DevTreeError> {
     Ok(())
 }
 
+fn find_devices(dtb: &DevTree) -> Result<(), DevTreeError> {
+    let mut node_iter = dtb.nodes();
+    while let Some(node) = node_iter.next()? {
+        let node_name = node.name()?;
+        if node_name == "timer" {
+            println!("Timer node found");
+            let req = KernelDeviceRequest {
+                dev_type: KernelDeviceType::Timer.into(),
+            };
+
+            unsafe { load_kernel_device(req.as_bytes()) }.expect("Failed to load kernel device");
+            // let mut prop_iter = node.props();
+            // while let Some(prop) = prop_iter.next()? {
+            //     if prop.name()? == "interrupts" {
+            //         println!("Interrupts: {:?}", prop.u32(0)?);
+            //     }
+            // }
+        }
+    }
+    Ok(())
+}
+
 fn main() {
     println!("Hello from usermode!");
 
@@ -91,8 +114,12 @@ fn main() {
 
     // Allocate 10 MB
     println!("Allocating big buffer using newly discovered memory");
-    let buf = unsafe { virt_map(1024 * 1024 * 10, VirtMapFlags::ReadWrite) }.unwrap();
+    let buf = unsafe { mem_map(1024 * 1024 * 10, MemMapFlags::ReadWrite) }.unwrap();
     println!("10MB Buffer at {buf:?}");
+
+    // Find all devices
+    find_devices(&dtb).expect("Failed to parse device tree");
+
     println!("bye for now...");
 }
 

@@ -15,9 +15,9 @@
   "os": "none",
   "panic-strategy": "abort",
   "relocation-model": "pic",
-  "target-c-int-width": "32",
+  "target-c-int-width": 32,
   "target-endian": "little",
-  "target-pointer-width": "64",
+  "target-pointer-width": 64,
   "trap-unreachable": true,
   "pre-link-args": {
     "gnu-lld": [

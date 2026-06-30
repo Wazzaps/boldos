@@ -1,4 +1,3 @@
 {
-    "rust-analyzer.cargo.target": "./src/aarch64/aarch64-none-elf.json",
     "rust-analyzer.check.allTargets": false,
 }

@@ -42,7 +42,7 @@ location: src/aarch64/usermode.rs:143:13
 - [x] Virtual page allocator
 - [x] Parse the DTB
   - [x] Tell kernel about the memory nodes
-  - [ ] Tell kernel about devices
+  - [x] Tell kernel about devices
 - [ ] Thread sleeping + cpu idling (timer interrupts)
 
 ### Milestone 2: We're getting somewhere

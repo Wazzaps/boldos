@@ -29,7 +29,7 @@ impl PageTable {
         Self([0; 512])
     }
 
-    pub fn get(&self, idx: usize) -> PageGetResult {
+    pub fn get(&self, idx: usize) -> PageGetResult<'_> {
         let raw = self.0[idx];
         match raw {
             0 => PageGetResult::Free,
@@ -41,7 +41,7 @@ impl PageTable {
         }
     }
 
-    pub fn get_mut(&mut self, idx: usize) -> PageGetMutResult {
+    pub fn get_mut(&mut self, idx: usize) -> PageGetMutResult<'_> {
         match self.0[idx] {
             0 => PageGetMutResult::Free,
             raw if raw & 0b11 == PT_BLOCK => PageGetMutResult::Block,

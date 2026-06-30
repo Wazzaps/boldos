@@ -19,7 +19,7 @@ impl<T> IrqMutex<T> {
 }
 
 impl<T: ?Sized> IrqMutex<T> {
-    pub fn lock(&self) -> IrqGuard<T> {
+    pub fn lock(&self) -> IrqGuard<'_, T> {
         let prev_state = DAIF.get();
         unsafe { disable() };
         // assert_eq!(DAIF.get() & (1 << 7), 1 << 7);

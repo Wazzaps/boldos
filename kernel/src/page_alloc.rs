@@ -199,7 +199,7 @@ impl<const SIZE: usize> Bitmap<SIZE> {
         self.bitmap.len() * 64
     }
 
-    pub fn iter(&self) -> BitmapIterator {
+    pub fn iter(&self) -> BitmapIterator<'_> {
         BitmapIterator {
             bitmap: &self.bitmap,
             idx: 0,
@@ -543,8 +543,14 @@ pub fn add_memory_node(phy_addr: PhyAddr, len: usize) {
         extern "C" {
             static _text_start: u8;
             static _end: u8;
+            static _dtb_start: u8;
         }
+
         let kernel_region = (&raw const _text_start as usize, &raw const _end as usize);
+        let dtb_region = (
+            &raw const _dtb_start as usize,
+            &raw const _dtb_start as usize + 0x10000,
+        );
         let early_heap_region = (
             &raw const EARLY_HEAP as usize,
             &raw const EARLY_HEAP as usize + EARLY_HEAP_SIZE,
@@ -559,5 +565,7 @@ pub fn add_memory_node(phy_addr: PhyAddr, len: usize) {
             early_heap_region.1,
             (kernel_region.1 - early_heap_region.0) / PAGE_SIZE,
         );
+        // TODO: mark all pages currently mapped to usermode instead
+        page_alloc.mark_allocated(dtb_region.0, (dtb_region.1 - dtb_region.0) / PAGE_SIZE);
     }
 }

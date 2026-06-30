@@ -2,15 +2,15 @@ use crate::aarch64::exceptions::ExceptionContext;
 use crate::aarch64::mmu;
 use crate::aarch64::mmu::{tlb_flush, PageTable};
 use crate::drv::qemu_console::puts;
-use crate::page_alloc::{add_memory_node, PageBox, PageSlice, PhyAddr, PAGE_ALLOC, PAGE_SIZE};
+use crate::page_alloc::{add_memory_node, PageBox, PhyAddr, PAGE_ALLOC, PAGE_SIZE};
 use crate::{page_alloc, println};
 use aarch64_cpu::registers::{ELR_EL1, SPSR_EL1, SP_EL0, TTBR0_EL1};
 use core::arch::asm;
 use core::cell::UnsafeCell;
 use core::mem::{forget, MaybeUninit};
-use kernel_api::{PhyMapFlags, Syscall, VirtMapFlags};
+use kernel_api::{KError, KernelDeviceRequest, MemMapFlags, PhyMapFlags, Syscall};
 use tock_registers::interfaces::Writeable;
-use zerocopy::FromZeros;
+use zerocopy::{FromZeros, IntoBytes};
 
 #[derive(FromZeros)]
 struct Thread {
@@ -172,13 +172,13 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                 .vmap(PhyAddr(phy_addr as usize), len as usize, page_flags)
                 as u64;
         }
-        Syscall::VirtMap => {
+        Syscall::MemMap => {
             let len = e.gpr[0];
-            let flags = VirtMapFlags::from_bits_truncate(e.gpr[1]);
+            let flags = MemMapFlags::from_bits_truncate(e.gpr[1]);
             let thread = INIT_THREAD.as_mut();
 
             let mut page_flags: u64 = mmu::PT_ISH | mmu::PT_MEM; // inner shareable
-            if flags.contains(VirtMapFlags::ReadWrite) {
+            if flags.contains(MemMapFlags::ReadWrite) {
                 page_flags |= mmu::PT_RW_EL0;
             } else {
                 page_flags |= mmu::PT_RO_EL0;
@@ -190,7 +190,7 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
             e.gpr[0] = thread.page_table.vmap(phy_addr, len as usize, page_flags) as u64;
             forget(page_slice); // Don't free the memory we just allocated
         }
-        Syscall::VirtUnmap => {
+        Syscall::MemUnmap => {
             let virt_addr = e.gpr[0];
             let len = e.gpr[1];
             let thread = INIT_THREAD.as_mut();
@@ -205,6 +205,23 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
             let phy_addr = e.gpr[0];
             let len = e.gpr[1];
             add_memory_node(PhyAddr(phy_addr as usize), len as usize);
+        }
+        Syscall::LoadKernelDevice => {
+            let mut buf = KernelDeviceRequest::new_zeroed();
+            let ptr = e.gpr[0];
+            let len = e.gpr[1];
+            {
+                let buf = buf.as_mut_bytes();
+                if len != buf.len() as u64 {
+                    e.gpr[0] = KError::InvalidArgument.into();
+                    return;
+                }
+                copy_from_user(ptr as usize, len as usize, buf);
+            }
+
+            println!(" user: LoadKernelDevice: {:?}", buf);
+
+            e.gpr[0] = 0;
         }
     }
 }
