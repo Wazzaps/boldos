@@ -4,8 +4,10 @@
 mod utils;
 
 use crate::utils::{
-    FmtWriteAdapter, download_more_ram, dump_hex_slice, exit, load_kernel_device, mem_map, mem_unmap, phy_map,
+    download_more_ram, dump_hex_slice, exit, load_kernel_device, mem_map, mem_unmap, phy_map,
+    FmtWriteAdapter,
 };
+use core::fmt::Write;
 use core::panic::PanicInfo;
 use core::ptr::slice_from_raw_parts;
 use fdt_rs::base::DevTree;
@@ -13,7 +15,6 @@ use fdt_rs::error::DevTreeError;
 use fdt_rs::prelude::{FallibleIterator, PropReader};
 use kernel_api::{KernelDeviceRequest, KernelDeviceType, MemMapFlags, PhyMapFlags};
 use zerocopy::IntoBytes;
-use core::fmt::Write;
 
 fn map_dtb() -> Result<DevTree<'static>, DevTreeError> {
     unsafe {
