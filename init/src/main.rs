@@ -5,7 +5,7 @@ mod utils;
 
 use crate::utils::{
     download_more_ram, dump_hex_slice, exit, load_kernel_device, mem_map, mem_unmap, phy_map,
-    FmtWriteAdapter,
+    sleep_sec, FmtWriteAdapter,
 };
 use core::fmt::Write;
 use core::panic::PanicInfo;
@@ -122,6 +122,9 @@ fn main() {
     find_devices(&dtb).expect("Failed to parse device tree");
 
     println!("bye for now...");
+    loop {
+        sleep_sec(3);
+    }
 }
 
 #[no_mangle]

@@ -1,6 +1,7 @@
 use crate::aarch64::exceptions::ExceptionContext;
 use crate::aarch64::mmu;
 use crate::aarch64::mmu::{tlb_flush, PageTable};
+use crate::drv::arm_gic::{timer_get_absolute_time_ms, timer_set_timeout};
 use crate::drv::qemu_console::puts;
 use crate::page_alloc::{add_memory_node, PageBox, PhyAddr, PAGE_ALLOC, PAGE_SIZE};
 use crate::{page_alloc, println};
@@ -221,6 +222,20 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
 
             println!(" user: LoadKernelDevice: {:?}", buf);
 
+            e.gpr[0] = 0;
+        }
+        Syscall::SleepSec => {
+            let sec = e.gpr[0];
+            let deadline: u64 = timer_get_absolute_time_ms() + sec * 1000;
+            println!(" user: Sleeping for {} seconds", sec);
+            loop {
+                let sleep_left = deadline.saturating_sub(timer_get_absolute_time_ms());
+                if sleep_left == 0 {
+                    break;
+                }
+                timer_set_timeout(sleep_left);
+                unsafe { asm!("wfi") }
+            }
             e.gpr[0] = 0;
         }
     }

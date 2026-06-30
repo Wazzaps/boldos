@@ -122,6 +122,16 @@ pub unsafe fn load_kernel_device(req_buf: &[u8]) -> Result<(), KError> {
     }
 }
 
+pub fn sleep_sec(sec: u64) {
+    unsafe {
+        asm!(
+        "svc #0",
+        in("x0") sec as u64,
+        in("x8") Syscall::SleepSec as u64,
+        );
+    }
+}
+
 pub(crate) struct FmtWriteAdapter;
 
 impl core::fmt::Write for FmtWriteAdapter {

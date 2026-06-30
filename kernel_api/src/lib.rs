@@ -13,6 +13,7 @@ pub enum Syscall {
     MemUnmap = 4,
     DownloadMoreRam = 5,
     LoadKernelDevice = 6,
+    SleepSec = 7,
 }
 
 #[derive(FromPrimitive, IntoPrimitive, Eq, PartialEq, Copy, Clone, Debug)]

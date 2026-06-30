@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 
+use crate::aarch64::interrupts;
 use crate::aarch64::mmu::eject_lowmem;
 use crate::page_alloc::PhyAddr;
 use aarch64::{mmu, usermode};
@@ -40,6 +41,9 @@ pub unsafe extern "C" fn kmain() -> ! {
     println!("--- BoldOS ---");
     println!("alloc: Initializing early allocator");
     page_alloc::init_early_heap();
+    drv::arm_gic::init_gic();
+    drv::arm_gic::timer_clear();
+    interrupts::enable();
     usermode::start();
     println!("Sleeping forever");
     loop {
