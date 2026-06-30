@@ -19,6 +19,18 @@ macro_rules! set_msr_const {
 }
 
 #[macro_export]
+macro_rules! set_msr {
+    ($name: ident, $value: expr) => {
+        let val: u64 = $value;
+        ::core::arch::asm!(
+            concat!("msr ", stringify!($name), ", {}"),
+            in(reg) val,
+            options(nomem, nostack)
+        )
+    };
+}
+
+#[macro_export]
 macro_rules! get_msr {
     ($name: ident) => {{
         let val: u64;

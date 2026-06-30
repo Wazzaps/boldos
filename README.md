@@ -25,11 +25,16 @@ Allocating big buffer using newly discovered memory
 Extracting timer information from DTB
  user: LoadKernelDevice: GicAndTimer { gicd_base: 134217728, gicc_base: 134283264, timer_ppi_interrupt: 30, _padding: 0 }
   drv: Initializing ARM GIC
-bye for now...
+Current time: 57 ms
  user: Sleeping for 1 seconds
   irq: Timer Ticked!
+Current time: 1059 ms
  user: Sleeping for 1 seconds
   irq: Timer Ticked!
+Current time: 2060 ms
+ user: Sleeping for 1 seconds
+  irq: Timer Ticked!
+Current time: 3061 ms
  user: Sleeping for 1 seconds
 
 ```
@@ -57,7 +62,7 @@ bye for now...
   - [x] ARM GIC
   - [x] ARM Arch Timer
 - [ ] Simple drivers from usermode
-  - [ ] Monotonic Time 
+  - [x] Monotonic Time 
   - [ ] QEMU fw_cfg
     - [ ] Kernel commandline
     - [ ] Initrd block device

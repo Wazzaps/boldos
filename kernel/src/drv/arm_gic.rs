@@ -1,5 +1,5 @@
+use crate::{get_msr, set_msr};
 use crate::{page_alloc::PhyAddr, println};
-use core::arch::asm;
 use core::ptr::{read_volatile, write_volatile};
 
 static mut GICD_BASE: usize = 0;
@@ -55,6 +55,10 @@ pub unsafe fn init_gic(gicd_base: usize, gicc_base: usize, timer_ppi_interrupt: 
     // Enable distributor (Group 1 / Non-Secure interrupts)
     mmio_write(gicd_base, GICD_CTLR, 1);
 
+    // -- timer setup --
+    // Enable EL0 timer access
+    set_msr!(cntkctl_el1, 1);
+
     // -- cpu interface setup --
     // TODO: per core
 
@@ -69,33 +73,29 @@ pub unsafe fn timer_set_timeout(ms: u64) {
     let gicc_base = (&raw const GICC_BASE).read();
     assert_ne!(gicc_base, 0, "GIC must be initialized before sleeping");
 
-    let freq: u64;
     // Read the system counter frequency (Hz)
-    asm!("mrs {}, cntfrq_el0", out(reg) freq);
-
-    let ticks = (freq / 1000) * ms;
+    let freq = get_msr!(cntfrq_el0);
 
     // Write countdown value
-    asm!("msr cntp_tval_el0, {}", in(reg) ticks);
+    set_msr!(cntp_tval_el0, (freq / 1000) * ms);
 
     // Enable timer, unmask interrupt (Bit 0 = 1, Bit 1 = 0)
-    asm!("msr cntp_ctl_el0, {}", in(reg) 1_u64);
+    set_msr!(cntp_ctl_el0, 1);
 }
 
 pub unsafe fn timer_clear() {
     // Mask the timer interrupt temporarily or turn it off
     // Setting Bit 1 (IMASK) hides the interrupt until a new tval is written
-    asm!("msr cntp_ctl_el0, {}", in(reg) 3_u64);
+    set_msr!(cntp_ctl_el0, 3);
 }
 
 pub fn timer_get_absolute_time_ms() -> u64 {
     unsafe {
-        let freq: u64;
         // Read the system counter frequency (Hz)
-        asm!("mrs {}, cntfrq_el0", out(reg) freq);
+        let freq = get_msr!(cntfrq_el0);
 
-        let mut ticks: u64;
-        asm!("mrs {}, cntpct_el0", out(reg) ticks);
+        // Read the current system counter value
+        let ticks = get_msr!(cntpct_el0);
 
         (ticks * 1000) / freq
     }
