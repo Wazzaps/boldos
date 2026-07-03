@@ -112,7 +112,7 @@ pub unsafe fn handle_irq() {
     match interrupt_id {
         30 => {
             // Non-Secure Physical Timer
-            println!("  irq: Timer Ticked!");
+            // println!("  irq: Timer Ticked!");
 
             // Clear the timer interrupt so it stops triggering
             timer_clear();

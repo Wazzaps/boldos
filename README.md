@@ -14,28 +14,37 @@ $ cargo run
 --- BoldOS ---
 alloc: Initializing early allocator
  user: Starting usermode
-Hello from usermode!
-DTB mapped at 0x50200000, hexdump of first 32 bytes:
+ user: Creating thread 1
+ init: Hello from usermode!
+ init: DTB mapped at 0x50200000, hexdump of first 32 bytes:
 d00dfeed 00100000 00000040 00001db4 00000030 00000011 00000010 00000000 
 
-Boot args: "placeholder kernel params"
-RAM: 0p40000000 (268435456 bytes)
-Allocating big buffer using newly discovered memory
-10MB Buffer at 0x50400000
-Extracting timer information from DTB
- user: LoadKernelDevice: GicAndTimer { gicd_base: 134217728, gicc_base: 134283264, timer_ppi_interrupt: 30, _padding: 0 }
+ init: Boot args: "placeholder kernel params"
+ init: RAM: 0p40000000 (268435456 bytes)
+ init: Extracting timer information from DTB
+ user: LoadKernelDevice: GicAndTimer {
+    gicd_base: 0x8000000,
+    gicc_base: 0x8010000,
+    timer_ppi_interrupt: 0x1e,
+    _padding: 0x0,
+}
   drv: Initializing ARM GIC
-Current time: 57 ms
- user: Sleeping for 1 seconds
-  irq: Timer Ticked!
-Current time: 1059 ms
- user: Sleeping for 1 seconds
-  irq: Timer Ticked!
-Current time: 2060 ms
- user: Sleeping for 1 seconds
-  irq: Timer Ticked!
-Current time: 3061 ms
- user: Sleeping for 1 seconds
+ init: Creating thread
+ user: Creating thread 2
+ init: Thread created with ID: 2
+ init: Current time: 20 ms
+ user: Switching from thread 1 to thread 2
+ init: Hello from thread! My PID is 2
+ init: Thread Current time: 21 ms
+ user: Switching from thread 2 to thread 1
+ init: Current time: 1022 ms
+ user: Switching from thread 1 to thread 2
+ init: Thread Current time: 1022 ms
+ user: Switching from thread 2 to thread 1
+ init: Current time: 2023 ms
+ user: Switching from thread 1 to thread 2
+ init: Thread Current time: 2024 ms
+ user: Switching from thread 2 to thread 1
 
 ```
 
@@ -73,7 +82,7 @@ Current time: 3061 ms
     - [ ] Framebuffer POC
     - [ ] Input POC
     - [ ] RNG POC
-- [ ] Spawn multiple threads
+- [x] Spawn multiple threads
 - [ ] IPC
   - [ ] Shared memory
   - [ ] Futex

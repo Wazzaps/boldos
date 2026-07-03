@@ -7,39 +7,39 @@ use crate::page_alloc::{add_memory_node, PageBox, PhyAddr, PAGE_ALLOC, PAGE_SIZE
 use crate::{drv, page_alloc, println};
 use aarch64_cpu::registers::{ELR_EL1, SPSR_EL1, SP_EL0, TTBR0_EL1};
 use core::arch::asm;
-use core::cell::UnsafeCell;
 use core::mem::{forget, MaybeUninit};
 use kernel_api::kernel_device::KernelDeviceId;
-use kernel_api::{kernel_device, KError, MemMapFlags, PhyMapFlags, Syscall};
+use kernel_api::{kernel_device, KError, MemMapFlags, PhyMapFlags, Pid, Syscall};
 use tock_registers::interfaces::Writeable;
 use zerocopy::{FromZeros, IntoBytes};
 
-#[derive(FromZeros)]
 struct Thread {
     /// Virtual memory mapping
-    page_table: PageTable,
+    page_table: PageBox<PageTable>,
     /// Stack contents
-    stack: [u64; 1024], // 8KiB stack
-    /// General-purpose registers
-    gprs: [u64; 31],
-    /// Link register
-    lr: u64,
-    /// Program counter
-    pc: u64,
-    /// Stack pointer
-    sp: u64,
-    /// Saved program status register
-    spsr: u64,
+    stack: PageBox<[u64; 1024]>, // 8KiB stack
+    /// State
+    state: ExceptionContext,
+    /// Sleep state
+    sleep_deadline: u64,
 }
 
 impl Thread {
-    pub unsafe fn enter(&mut self) -> ! {
-        TTBR0_EL1.set_baddr(PhyAddr::from_virt(&raw const self.page_table).0 as u64);
-        SPSR_EL1.set(self.spsr);
-        SP_EL0.set(self.sp);
-        ELR_EL1.set(self.pc);
+    pub unsafe fn load(&mut self) {
+        TTBR0_EL1.set_baddr(PhyAddr::from_virt(self.page_table.as_ptr()).0 as u64);
+        SPSR_EL1.set(self.state.spsr);
+        SP_EL0.set(self.state.sp);
+        ELR_EL1.set(self.state.pc);
         tlb_flush();
+    }
+
+    pub unsafe fn enter(&mut self) -> ! {
+        self.load();
         asm!("eret", options(noreturn))
+    }
+
+    pub fn save(&mut self, e: &mut ExceptionContext) {
+        self.state = *e;
     }
 }
 
@@ -48,59 +48,131 @@ const DEFAULT_SP: u64 = 0x8000000;
 const DEFAULT_STACK_SIZE: u64 = 0x4000;
 
 impl Thread {
-    fn init(&mut self) {
-        self.zero();
-        self.pc = DEFAULT_PC;
-        self.sp = DEFAULT_SP;
-        self.spsr = 0x140;
+    fn new() -> Self {
+        Self {
+            page_table: PageBox::new_zeroed(),
+            stack: PageBox::new_zeroed(),
+            state: ExceptionContext {
+                gpr: [0; 30],
+                lr: 0,
+                pc: DEFAULT_PC,
+                sp: DEFAULT_SP,
+                spsr: 0x140,
+            },
+            sleep_deadline: 0,
+        }
     }
 }
-
-struct GlobalThread(UnsafeCell<MaybeUninit<PageBox<Thread>>>);
-
-impl GlobalThread {
-    const unsafe fn uninit() -> Self {
-        Self(UnsafeCell::new(MaybeUninit::uninit()))
-    }
-
-    unsafe fn init(&self) {
-        let mut thread = PageBox::<Thread>::new_zeroed();
-        thread.init();
-        self.0.get().write(MaybeUninit::new(thread));
-    }
-
-    #[allow(dead_code)]
-    unsafe fn as_ref(&self) -> &Thread {
-        let inner = &*self.0.get();
-        inner.assume_init_ref()
-    }
-
-    unsafe fn as_mut(&self) -> &mut Thread {
-        let inner = &mut *self.0.get();
-        inner.assume_init_mut()
-    }
-}
-
-unsafe impl Sync for GlobalThread {}
 
 static INIT_BIN: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/init.bin"));
-static INIT_THREAD: GlobalThread = unsafe { GlobalThread::uninit() };
 
-pub unsafe fn start() {
-    println!(" user: Starting usermode");
+static mut THREAD_MANAGER: MaybeUninit<PageBox<ThreadManager>> = MaybeUninit::uninit();
+const THREAD_BLOCK_SIZE: usize = 128;
 
+struct ThreadManager {
+    block: PageBox<ThreadBlock>,
+    thread_bitmap: [u64; THREAD_BLOCK_SIZE / 64],
+    current_thread: u32,
+}
+
+#[derive(FromZeros)]
+struct ThreadBlock {
+    threads: [MaybeUninit<Thread>; THREAD_BLOCK_SIZE],
+}
+
+impl ThreadManager {
+    unsafe fn init_global() {
+        #[allow(static_mut_refs)]
+        let mgr = THREAD_MANAGER.write(PageBox::new(ThreadManager {
+            block: PageBox::new_zeroed(),
+            thread_bitmap: [0; THREAD_BLOCK_SIZE / 64],
+            current_thread: 0,
+        }));
+
+        // Initialize the init thread
+        let (pid, _thread) = mgr.create_thread();
+        mgr.current_thread = pid;
+    }
+
+    unsafe fn get_global() -> &'static mut ThreadManager {
+        #[allow(static_mut_refs)]
+        THREAD_MANAGER.assume_init_mut()
+    }
+
+    fn get_current_thread(&mut self) -> &mut Thread {
+        self.get_thread(self.current_thread)
+    }
+
+    fn create_thread(&mut self) -> (Pid, &mut Thread) {
+        // TODO: this currently doesn't share the page table with the parent thread
+        for pid in 0..THREAD_BLOCK_SIZE {
+            let block_idx = pid / 64;
+            let bit_idx = pid % 64;
+            if self.thread_bitmap[block_idx] & (1 << bit_idx) == 0 {
+                println!(" user: Creating thread {}", pid + 1);
+                let thread = self.block.threads[pid].write(Thread::new());
+
+                unsafe {
+                    for stack_page in (0..DEFAULT_STACK_SIZE).step_by(PAGE_SIZE) {
+                        let phy_addr = PhyAddr::from_virt(
+                            thread.stack.as_ptr().byte_offset(stack_page as isize),
+                        );
+                        thread.page_table.vmap_at(
+                            (DEFAULT_SP - DEFAULT_STACK_SIZE + stack_page) as usize,
+                            phy_addr,
+                            DEFAULT_PAGE_FLAGS,
+                        );
+                    }
+                }
+
+                self.thread_bitmap[block_idx] |= 1 << bit_idx;
+                return ((pid + 1) as u32, thread);
+            }
+        }
+        panic!("No free thread slots");
+    }
+
+    fn get_thread(&mut self, pid: Pid) -> &mut Thread {
+        assert!(pid > 0, "Thread 0 is invalid");
+        let pid = pid - 1;
+        let block_idx = pid / 64;
+        let bit_idx = pid % 64;
+        if self.thread_bitmap[block_idx as usize] & (1 << bit_idx) == 0 {
+            panic!("Thread {pid} not found");
+        }
+        unsafe { self.block.threads[pid as usize].assume_init_mut() }
+    }
+
+    fn get_next_deadline(&mut self) -> (Pid, u64) {
+        let mut min_deadline = u64::MAX;
+        let mut min_pid = 0;
+        for pid in 0..THREAD_BLOCK_SIZE {
+            let block_idx = pid / 64;
+            let bit_idx = pid % 64;
+            if self.thread_bitmap[block_idx as usize] & (1 << bit_idx) == 0 {
+                continue;
+            }
+            let thread = self.get_thread(pid as Pid + 1);
+            if thread.sleep_deadline < min_deadline {
+                min_deadline = thread.sleep_deadline;
+                min_pid = pid + 1;
+            }
+        }
+        (min_pid as Pid, min_deadline)
+    }
+}
+
+const DEFAULT_PAGE_FLAGS: u64 = mmu::PT_RW_EL0 | // non-privileged
+        mmu::PT_ISH | // inner shareable
+        mmu::PT_MEM; // normal memory
+
+unsafe fn map_init_binary(thread: &mut Thread) {
     let mut code_slice = PAGE_ALLOC
         .lock()
         .alloc_zeroed(INIT_BIN.len().div_ceil(PAGE_SIZE))
         .expect("OOM");
     code_slice.as_mut_slice()[..INIT_BIN.len()].copy_from_slice(INIT_BIN);
 
-    INIT_THREAD.init();
-    let thread = INIT_THREAD.as_mut();
-
-    const PAGE_FLAGS: u64 = mmu::PT_RW_EL0 | // non-privileged
-        mmu::PT_ISH | // inner shareable
-        mmu::PT_MEM; // normal memory
     for code_page in 0..INIT_BIN.len().div_ceil(PAGE_SIZE) {
         thread.page_table.vmap_at(
             DEFAULT_PC as usize + code_page * PAGE_SIZE,
@@ -109,18 +181,18 @@ pub unsafe fn start() {
                     .as_ptr()
                     .byte_offset((code_page * PAGE_SIZE) as isize),
             ),
-            PAGE_FLAGS,
+            DEFAULT_PAGE_FLAGS,
         );
     }
-    for stack_page in (0..DEFAULT_STACK_SIZE).step_by(PAGE_SIZE) {
-        let phy_addr = PhyAddr::from_virt(thread.stack.as_ptr().byte_offset(stack_page as isize));
-        thread.page_table.vmap_at(
-            (DEFAULT_SP - DEFAULT_STACK_SIZE + stack_page) as usize,
-            phy_addr,
-            PAGE_FLAGS,
-        );
-    }
+    core::mem::forget(code_slice);
+}
 
+pub unsafe fn start() {
+    println!(" user: Starting usermode");
+
+    ThreadManager::init_global();
+    let thread = ThreadManager::get_global().get_current_thread();
+    map_init_binary(thread);
     thread.enter();
 }
 
@@ -155,7 +227,7 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
             let phy_addr = e.gpr[0];
             let len = e.gpr[1];
             let flags = PhyMapFlags::from_bits_truncate(e.gpr[2]);
-            let thread = INIT_THREAD.as_mut();
+            let thread = ThreadManager::get_global().get_current_thread();
 
             let mut page_flags: u64 = mmu::PT_ISH; // inner shareable
             if flags.contains(PhyMapFlags::ReadWrite) {
@@ -177,7 +249,7 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
         Syscall::MemMap => {
             let len = e.gpr[0];
             let flags = MemMapFlags::from_bits_truncate(e.gpr[1]);
-            let thread = INIT_THREAD.as_mut();
+            let thread = ThreadManager::get_global().get_current_thread();
 
             let mut page_flags: u64 = mmu::PT_ISH | mmu::PT_MEM; // inner shareable
             if flags.contains(MemMapFlags::ReadWrite) {
@@ -195,7 +267,7 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
         Syscall::MemUnmap => {
             let virt_addr = e.gpr[0];
             let len = e.gpr[1];
-            let thread = INIT_THREAD.as_mut();
+            let thread = ThreadManager::get_global().get_current_thread();
 
             thread.page_table.vunmap(virt_addr as usize, len as usize);
 
@@ -221,7 +293,7 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                     "Invalid length for GicAndTimer"
                 );
                 copy_from_user(ptr as usize, len as usize, gic_and_timer.as_mut_bytes());
-                println!(" user: LoadKernelDevice: {:?}", gic_and_timer);
+                println!(" user: LoadKernelDevice: {:#x?}", gic_and_timer);
 
                 drv::arm_gic::timer_clear();
                 drv::arm_gic::init_gic(
@@ -240,9 +312,32 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
         Syscall::SleepSec => {
             let sec = e.gpr[0];
             let deadline: u64 = timer_get_absolute_time_ms() + sec * 1000;
-            println!(" user: Sleeping for {} seconds", sec);
+            // println!(" user: Sleeping for {} seconds", sec);
+            let mgr = ThreadManager::get_global();
+            {
+                let thread = mgr.get_current_thread();
+                thread.sleep_deadline = deadline;
+            }
+            let (next_pid, next_deadline) = mgr.get_next_deadline();
+
+            if next_pid != mgr.current_thread {
+                println!(
+                    " user: Switching from thread {} to thread {}",
+                    mgr.current_thread, next_pid
+                );
+                // Save current thread
+                let current_thread = mgr.get_current_thread();
+                current_thread.save(e);
+
+                // Switch to next thread
+                mgr.current_thread = next_pid;
+                let next_thread = mgr.get_current_thread();
+                next_thread.load();
+                *e = next_thread.state;
+            }
+
             loop {
-                let sleep_left = deadline.saturating_sub(timer_get_absolute_time_ms());
+                let sleep_left = next_deadline.saturating_sub(timer_get_absolute_time_ms());
                 if sleep_left == 0 {
                     break;
                 }
@@ -250,6 +345,18 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                 unsafe { asm!("wfi") }
             }
             e.gpr[0] = 0;
+        }
+        Syscall::CreateThread => {
+            let func = e.gpr[0];
+            let (pid, thread) = ThreadManager::get_global().create_thread();
+            thread.state.pc = func;
+            map_init_binary(thread);
+            e.gpr[0] = pid as u64;
+            return;
+        }
+        Syscall::GetPid => {
+            e.gpr[0] = ThreadManager::get_global().current_thread as u64;
+            return;
         }
     }
 }

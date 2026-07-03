@@ -6,8 +6,8 @@ pub(crate) mod utils;
 
 use crate::drv::GicAndTimer;
 use crate::utils::{
-    download_more_ram, dump_hex_slice, exit, mem_map, mem_unmap, phy_map, sleep_sec,
-    FmtWriteAdapter,
+    create_thread, download_more_ram, dump_hex_slice, exit, get_pid, mem_map, mem_unmap, phy_map,
+    sleep_sec, FmtWriteAdapter,
 };
 use core::fmt::Write;
 use core::panic::PanicInfo;
@@ -92,13 +92,19 @@ fn main() {
     // Find all memory nodes
     find_mem_nodes(&dtb).expect("Failed to parse device tree");
 
-    // Allocate 10 MB
-    println!("Allocating big buffer using newly discovered memory");
-    let buf = unsafe { mem_map(1024 * 1024 * 10, MemMapFlags::ReadWrite) }.unwrap();
-    println!("10MB Buffer at {buf:?}");
-
     // Find all devices
     let _gic_and_timer = GicAndTimer::find_and_init(&dtb).expect("Failed to parse device tree");
+
+    println!("Creating thread");
+    let tid = create_thread(|| {
+        println!("Hello from thread! My PID is {}", get_pid());
+        loop {
+            println!("Thread Current time: {} ms", GicAndTimer::current_time_ms());
+            sleep_sec(1);
+        }
+    })
+    .expect("Failed to create thread");
+    println!("Thread created with ID: {}", tid);
 
     loop {
         println!("Current time: {} ms", GicAndTimer::current_time_ms());

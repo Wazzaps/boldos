@@ -1,5 +1,5 @@
 use core::arch::asm;
-use kernel_api::{kernel_device, KError, MemMapFlags, PhyMapFlags, Syscall};
+use kernel_api::{kernel_device, KError, MemMapFlags, PhyMapFlags, Pid, Syscall};
 use num_enum::FromPrimitive;
 
 pub unsafe fn exit(code: u32) -> ! {
@@ -137,6 +137,35 @@ pub fn sleep_sec(sec: u64) {
     }
 }
 
+pub fn create_thread(func: fn() -> !) -> Result<Pid, KError> {
+    let mut res: i64;
+    unsafe {
+        asm!(
+        "svc #0",
+        in("x0") func as u64,
+        in("x8") Syscall::CreateThread as u64,
+        lateout("x0") res,
+        );
+    }
+    if res < 0 {
+        Err(KError::from_primitive(res as i32))
+    } else {
+        Ok(res as Pid)
+    }
+}
+
+pub fn get_pid() -> Pid {
+    let mut res: u64;
+    unsafe {
+        asm!(
+        "svc #0",
+        in("x8") Syscall::GetPid as u64,
+        lateout("x0") res,
+        );
+    }
+    res as Pid
+}
+
 pub(crate) struct FmtWriteAdapter;
 
 impl core::fmt::Write for FmtWriteAdapter {
@@ -164,7 +193,7 @@ macro_rules! print {
 #[macro_export]
 macro_rules! println {
     () => ($crate::print!("\n"));
-    ($($arg:tt)*) => ($crate::print!("{}\n", format_args!($($arg)*)));
+    ($($arg:tt)*) => ($crate::print!(" init: {}\n", format_args!($($arg)*)));
 }
 
 #[allow(dead_code)]

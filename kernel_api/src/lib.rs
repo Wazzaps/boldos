@@ -3,6 +3,8 @@ use bitflags::bitflags;
 use core::fmt::Debug;
 use num_enum::{FromPrimitive, IntoPrimitive, TryFromPrimitive};
 
+pub type Pid = u32;
+
 #[derive(TryFromPrimitive, IntoPrimitive, Eq, PartialEq, Copy, Clone, Debug)]
 #[repr(u32)]
 pub enum Syscall {
@@ -14,6 +16,8 @@ pub enum Syscall {
     DownloadMoreRam = 5,
     LoadKernelDevice = 6,
     SleepSec = 7,
+    CreateThread = 8,
+    GetPid = 9,
 }
 
 #[derive(FromPrimitive, IntoPrimitive, Eq, PartialEq, Copy, Clone, Debug)]

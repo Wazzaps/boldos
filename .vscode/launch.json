@@ -1,0 +1,27 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Attach to QEMU (debug)",
+            "type": "lldb",
+            "request": "custom",
+            "targetCreateCommands": [
+                "target create ${workspaceFolder}/kernel/target/aarch64-none-elf/debug/kernel.elf"
+            ],
+            "processCreateCommands": [
+                "gdb-remote localhost:1234"
+            ]
+        },
+        {
+            "name": "Attach to QEMU (release)",
+            "type": "lldb",
+            "request": "custom",
+            "targetCreateCommands": [
+                "target create ${workspaceFolder}/kernel/target/aarch64-none-elf/release/kernel.elf"
+            ],
+            "processCreateCommands": [
+                "gdb-remote localhost:1234"
+            ]
+        }
+    ]
+}

@@ -466,12 +466,20 @@ impl<T> PageBox<T> {
         }
     }
 
+    pub fn as_ptr(&self) -> *const T {
+        self.slice.as_ptr() as *const T
+    }
+
+    pub fn as_mut_ptr(&mut self) -> *mut T {
+        self.slice.as_mut_ptr() as *mut T
+    }
+
     pub fn as_ref(&self) -> &T {
-        unsafe { &*(self.slice.as_ptr() as *const T) }
+        unsafe { &*self.as_ptr() }
     }
 
     pub fn as_mut(&mut self) -> &mut T {
-        unsafe { &mut *(self.slice.as_mut_ptr() as *mut T) }
+        unsafe { &mut *self.as_mut_ptr() }
     }
 
     pub fn into_inner(self) -> T {
