@@ -62,6 +62,6 @@ pub unsafe extern "C" fn exception_handler2(e: &mut ExceptionContext) {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn irq_handler(_e: &mut ExceptionContext) {
-    crate::drv::arm_gic::handle_irq();
+pub unsafe extern "C" fn irq_handler(e: &mut ExceptionContext) {
+    crate::drv::arm_gic::handle_irq(e);
 }

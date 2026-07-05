@@ -6,8 +6,8 @@ pub(crate) mod utils;
 
 use crate::drv::GicAndTimer;
 use crate::utils::{
-    create_thread, download_more_ram, dump_hex_slice, exit, get_pid, mem_map, mem_unmap, phy_map,
-    sleep_sec, FmtWriteAdapter,
+    control_thread, create_thread, download_more_ram, dump_hex_slice, exit, get_pid, mem_unmap,
+    phy_map, sleep_sec, FmtWriteAdapter,
 };
 use core::fmt::Write;
 use core::panic::PanicInfo;
@@ -15,7 +15,7 @@ use core::ptr::slice_from_raw_parts;
 use fdt_rs::base::DevTree;
 use fdt_rs::error::DevTreeError;
 use fdt_rs::prelude::{FallibleIterator, PropReader};
-use kernel_api::{MemMapFlags, PhyMapFlags};
+use kernel_api::{ControlThreadOp, PhyMapFlags};
 
 fn map_dtb() -> Result<DevTree<'static>, DevTreeError> {
     unsafe {
@@ -100,14 +100,17 @@ fn main() {
         println!("Hello from thread! My PID is {}", get_pid());
         loop {
             println!("Thread Current time: {} ms", GicAndTimer::current_time_ms());
+            // delay_ticks(500000000);
             sleep_sec(1);
         }
     })
     .expect("Failed to create thread");
+    control_thread(tid, ControlThreadOp::Resume).expect("Failed to resume thread");
     println!("Thread created with ID: {}", tid);
 
     loop {
         println!("Current time: {} ms", GicAndTimer::current_time_ms());
+        // delay_ticks(500000000);
         sleep_sec(1);
     }
 }

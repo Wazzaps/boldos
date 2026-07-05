@@ -18,6 +18,7 @@ pub enum Syscall {
     SleepSec = 7,
     CreateThread = 8,
     GetPid = 9,
+    ControlThread = 10,
 }
 
 #[derive(FromPrimitive, IntoPrimitive, Eq, PartialEq, Copy, Clone, Debug)]
@@ -34,6 +35,13 @@ impl Into<u64> for KError {
     fn into(self) -> u64 {
         Into::<i32>::into(self) as u64
     }
+}
+
+#[derive(TryFromPrimitive, IntoPrimitive, Eq, PartialEq, Copy, Clone, Debug)]
+#[repr(u32)]
+pub enum ControlThreadOp {
+    Pause = 0,
+    Resume = 1,
 }
 
 pub mod kernel_device {

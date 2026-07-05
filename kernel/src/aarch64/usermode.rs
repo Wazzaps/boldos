@@ -9,27 +9,25 @@ use aarch64_cpu::registers::{ELR_EL1, SPSR_EL1, SP_EL0, TTBR0_EL1};
 use core::arch::asm;
 use core::mem::{forget, MaybeUninit};
 use kernel_api::kernel_device::KernelDeviceId;
-use kernel_api::{kernel_device, KError, MemMapFlags, PhyMapFlags, Pid, Syscall};
+use kernel_api::{kernel_device, ControlThreadOp, KError, MemMapFlags, PhyMapFlags, Pid, Syscall};
 use tock_registers::interfaces::Writeable;
 use zerocopy::{FromZeros, IntoBytes};
 
 struct Thread {
-    /// Virtual memory mapping
     page_table: PageBox<PageTable>,
-    /// Stack contents
     stack: PageBox<[u64; 1024]>, // 8KiB stack
-    /// State
-    state: ExceptionContext,
-    /// Sleep state
+    vals: ExceptionContext,
     sleep_deadline: u64,
+    last_scheduled_time: u64,
+    state: ThreadState,
 }
 
 impl Thread {
     pub unsafe fn load(&mut self) {
         TTBR0_EL1.set_baddr(PhyAddr::from_virt(self.page_table.as_ptr()).0 as u64);
-        SPSR_EL1.set(self.state.spsr);
-        SP_EL0.set(self.state.sp);
-        ELR_EL1.set(self.state.pc);
+        SPSR_EL1.set(self.vals.spsr);
+        SP_EL0.set(self.vals.sp);
+        ELR_EL1.set(self.vals.pc);
         tlb_flush();
     }
 
@@ -39,7 +37,7 @@ impl Thread {
     }
 
     pub fn save(&mut self, e: &mut ExceptionContext) {
-        self.state = *e;
+        self.vals = *e;
     }
 }
 
@@ -52,7 +50,7 @@ impl Thread {
         Self {
             page_table: PageBox::new_zeroed(),
             stack: PageBox::new_zeroed(),
-            state: ExceptionContext {
+            vals: ExceptionContext {
                 gpr: [0; 30],
                 lr: 0,
                 pc: DEFAULT_PC,
@@ -60,14 +58,25 @@ impl Thread {
                 spsr: 0x140,
             },
             sleep_deadline: 0,
+            last_scheduled_time: 0,
+            state: ThreadState::Paused,
         }
     }
+}
+
+#[derive(Debug, PartialEq)]
+enum ThreadState {
+    Sleeping,
+    Runnable,
+    Running,
+    Paused,
 }
 
 static INIT_BIN: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/init.bin"));
 
 static mut THREAD_MANAGER: MaybeUninit<PageBox<ThreadManager>> = MaybeUninit::uninit();
 const THREAD_BLOCK_SIZE: usize = 128;
+const SCHEDULE_INTERVAL_MS: u64 = 30;
 
 struct ThreadManager {
     block: PageBox<ThreadBlock>,
@@ -90,7 +99,9 @@ impl ThreadManager {
         }));
 
         // Initialize the init thread
-        let (pid, _thread) = mgr.create_thread();
+        let (pid, thread) = mgr.create_thread();
+        thread.state = ThreadState::Running;
+        thread.last_scheduled_time = timer_get_absolute_time_ms();
         mgr.current_thread = pid;
     }
 
@@ -145,6 +156,7 @@ impl ThreadManager {
 
     fn get_next_deadline(&mut self) -> (Pid, u64) {
         let mut min_deadline = u64::MAX;
+        let mut min_sched_time = u64::MAX;
         let mut min_pid = 0;
         for pid in 0..THREAD_BLOCK_SIZE {
             let block_idx = pid / 64;
@@ -152,13 +164,69 @@ impl ThreadManager {
             if self.thread_bitmap[block_idx as usize] & (1 << bit_idx) == 0 {
                 continue;
             }
+            let is_current_thread = self.current_thread == (pid + 1) as u32;
             let thread = self.get_thread(pid as Pid + 1);
+            if (thread.state == ThreadState::Running && !is_current_thread)
+                || thread.state == ThreadState::Paused
+            {
+                continue;
+            }
             if thread.sleep_deadline < min_deadline {
                 min_deadline = thread.sleep_deadline;
                 min_pid = pid + 1;
             }
+            if thread.sleep_deadline == 0 && thread.last_scheduled_time < min_sched_time {
+                min_sched_time = thread.last_scheduled_time;
+                min_pid = pid + 1;
+            }
         }
         (min_pid as Pid, min_deadline)
+    }
+
+    unsafe fn schedule(&mut self, e: &mut ExceptionContext) {
+        let (next_pid, next_deadline) = loop {
+            let (next_pid, next_deadline) = self.get_next_deadline();
+            if next_pid != 0 {
+                break (next_pid, next_deadline);
+            }
+            println!(" user: No thread to schedule, waiting for interrupt");
+            unsafe { asm!("wfi") }
+        };
+
+        if next_pid != self.current_thread {
+            // println!(
+            //     " user: Switching from thread {} to thread {}",
+            //     self.current_thread, next_pid
+            // );
+            // Save current thread
+            let current_thread = self.get_current_thread();
+            current_thread.save(e);
+            if current_thread.state == ThreadState::Running {
+                current_thread.state = ThreadState::Runnable;
+            }
+
+            // Switch to next thread
+            self.current_thread = next_pid;
+            let next_thread = self.get_current_thread();
+            next_thread.load();
+            next_thread.last_scheduled_time = timer_get_absolute_time_ms();
+            next_thread.state = ThreadState::Running;
+            *e = next_thread.vals;
+        }
+
+        loop {
+            let sleep_left = next_deadline.saturating_sub(timer_get_absolute_time_ms());
+            if sleep_left == 0 {
+                self.get_current_thread().sleep_deadline = 0;
+                timer_set_timeout(SCHEDULE_INTERVAL_MS);
+                break;
+            }
+            if sleep_left > SCHEDULE_INTERVAL_MS {
+                println!(" user: cpu idling for: {sleep_left}ms");
+            }
+            timer_set_timeout(sleep_left);
+            unsafe { asm!("wfi") }
+        }
     }
 }
 
@@ -302,6 +370,9 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                     gic_and_timer.timer_ppi_interrupt,
                 );
 
+                // Start scheduling
+                timer_set_timeout(SCHEDULE_INTERVAL_MS);
+
                 e.gpr[0] = 0;
                 return;
             } else {
@@ -317,39 +388,21 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
             {
                 let thread = mgr.get_current_thread();
                 thread.sleep_deadline = deadline;
+                thread.state = ThreadState::Sleeping;
             }
-            let (next_pid, next_deadline) = mgr.get_next_deadline();
-
-            if next_pid != mgr.current_thread {
-                println!(
-                    " user: Switching from thread {} to thread {}",
-                    mgr.current_thread, next_pid
-                );
-                // Save current thread
-                let current_thread = mgr.get_current_thread();
-                current_thread.save(e);
-
-                // Switch to next thread
-                mgr.current_thread = next_pid;
-                let next_thread = mgr.get_current_thread();
-                next_thread.load();
-                *e = next_thread.state;
-            }
-
-            loop {
-                let sleep_left = next_deadline.saturating_sub(timer_get_absolute_time_ms());
-                if sleep_left == 0 {
-                    break;
+            mgr.schedule(e);
+            {
+                let thread = mgr.get_current_thread();
+                if thread.state == ThreadState::Sleeping {
+                    thread.state = ThreadState::Running;
                 }
-                timer_set_timeout(sleep_left);
-                unsafe { asm!("wfi") }
             }
             e.gpr[0] = 0;
         }
         Syscall::CreateThread => {
             let func = e.gpr[0];
             let (pid, thread) = ThreadManager::get_global().create_thread();
-            thread.state.pc = func;
+            thread.vals.pc = func;
             map_init_binary(thread);
             e.gpr[0] = pid as u64;
             return;
@@ -358,5 +411,42 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
             e.gpr[0] = ThreadManager::get_global().current_thread as u64;
             return;
         }
+        Syscall::ControlThread => {
+            let Ok(pid): Result<u32, _> = e.gpr[0].try_into() else {
+                println!("Invalid thread ID: {}", e.gpr[0]);
+                e.gpr[0] = KError::InvalidArgument.into();
+                return;
+            };
+            let Ok(op): Result<u32, _> = e.gpr[1].try_into() else {
+                println!("Invalid control thread operation: {}", e.gpr[1]);
+                e.gpr[0] = KError::InvalidArgument.into();
+                return;
+            };
+            let Ok(op) = ControlThreadOp::try_from(op) else {
+                println!("Unknown control thread operation: {}", e.gpr[1]);
+                e.gpr[0] = KError::InvalidArgument.into();
+                return;
+            };
+            let mgr = ThreadManager::get_global();
+            match op {
+                ControlThreadOp::Pause => {
+                    mgr.get_thread(pid).state = ThreadState::Paused;
+                    if pid == mgr.current_thread {
+                        todo!("Suspended own thread, need to switch to next thread");
+                    }
+                    e.gpr[0] = 0;
+                    return;
+                }
+                ControlThreadOp::Resume => {
+                    mgr.get_thread(pid).state = ThreadState::Runnable;
+                    e.gpr[0] = 0;
+                    return;
+                }
+            }
+        }
     }
+}
+
+pub unsafe fn handle_timer_tick(e: &mut ExceptionContext) {
+    ThreadManager::get_global().schedule(e);
 }

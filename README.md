@@ -32,19 +32,16 @@ d00dfeed 00100000 00000040 00001db4 00000030 00000011 00000010 00000000
  init: Creating thread
  user: Creating thread 2
  init: Thread created with ID: 2
- init: Current time: 20 ms
- user: Switching from thread 1 to thread 2
+ init: Current time: 12 ms
  init: Hello from thread! My PID is 2
- init: Thread Current time: 21 ms
- user: Switching from thread 2 to thread 1
- init: Current time: 1022 ms
- user: Switching from thread 1 to thread 2
- init: Thread Current time: 1022 ms
- user: Switching from thread 2 to thread 1
- init: Current time: 2023 ms
- user: Switching from thread 1 to thread 2
- init: Thread Current time: 2024 ms
- user: Switching from thread 2 to thread 1
+ init: Thread Current time: 13 ms
+ user: cpu idling for: 999ms
+ init: Current time: 1013 ms
+ init: Thread Current time: 1013 ms
+ user: cpu idling for: 1000ms
+ init: Current time: 2015 ms
+ init: Thread Current time: 2015 ms
+ user: cpu idling for: 1000ms
 
 ```
 

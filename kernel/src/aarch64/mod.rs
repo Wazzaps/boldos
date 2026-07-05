@@ -1,6 +1,6 @@
 use core::arch::global_asm;
 
-mod exceptions;
+pub mod exceptions;
 pub mod interrupts;
 pub mod mmu;
 pub mod usermode;

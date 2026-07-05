@@ -1,3 +1,5 @@
+use crate::aarch64::exceptions::ExceptionContext;
+use crate::aarch64::usermode::handle_timer_tick;
 use crate::{get_msr, set_msr};
 use crate::{page_alloc::PhyAddr, println};
 use core::ptr::{read_volatile, write_volatile};
@@ -101,7 +103,7 @@ pub fn timer_get_absolute_time_ms() -> u64 {
     }
 }
 
-pub unsafe fn handle_irq() {
+pub unsafe fn handle_irq(e: &mut ExceptionContext) {
     let gicc_base = (&raw const GICC_BASE).read();
 
     // Read Interrupt Acknowledge Register
@@ -114,10 +116,7 @@ pub unsafe fn handle_irq() {
             // Non-Secure Physical Timer
             // println!("  irq: Timer Ticked!");
 
-            // Clear the timer interrupt so it stops triggering
-            timer_clear();
-
-            // TODO: Schedule next event
+            handle_timer_tick(e);
         }
         1023 => {
             // Spurious interrupt
