@@ -80,6 +80,7 @@ d00dfeed 00100000 00000040 00001db4 00000030 00000011 00000010 00000000
     - [ ] Input POC
     - [ ] RNG POC
 - [x] Spawn multiple threads
+- [x] Preemptive scheduling (Round-Robin)
 - [ ] IPC
   - [ ] Shared memory
   - [ ] Futex
