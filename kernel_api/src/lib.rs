@@ -78,4 +78,7 @@ bitflags! {
     pub struct MemMapFlags: u64 {
         const ReadWrite = 1 << 0;
     }
+    pub struct CreateThreadFlags: u64 {
+        const SharePageTable = 1 << 0;
+    }
 }

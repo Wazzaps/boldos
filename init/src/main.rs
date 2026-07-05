@@ -15,7 +15,9 @@ use core::ptr::slice_from_raw_parts;
 use fdt_rs::base::DevTree;
 use fdt_rs::error::DevTreeError;
 use fdt_rs::prelude::{FallibleIterator, PropReader};
-use kernel_api::{ControlThreadOp, PhyMapFlags};
+use kernel_api::{ControlThreadOp, CreateThreadFlags, PhyMapFlags};
+
+static mut GLOBAL_COUNTER: u64 = 0;
 
 fn map_dtb() -> Result<DevTree<'static>, DevTreeError> {
     unsafe {
@@ -96,20 +98,37 @@ fn main() {
     let _gic_and_timer = GicAndTimer::find_and_init(&dtb).expect("Failed to parse device tree");
 
     println!("Creating thread");
-    let tid = create_thread(|| {
-        println!("Hello from thread! My PID is {}", get_pid());
-        loop {
-            println!("Thread Current time: {} ms", GicAndTimer::current_time_ms());
-            // delay_ticks(500000000);
-            sleep_sec(1);
-        }
-    })
+    let tid = create_thread(
+        || {
+            println!("Hello from thread! My PID is {}", get_pid());
+            loop {
+                let counter = unsafe { *(&raw const GLOBAL_COUNTER) };
+                println!(
+                    "Thread Current time: {} ms, counter: {}",
+                    GicAndTimer::current_time_ms(),
+                    counter
+                );
+                // delay_ticks(500000000);
+                sleep_sec(1);
+            }
+        },
+        CreateThreadFlags::SharePageTable,
+    )
     .expect("Failed to create thread");
     control_thread(tid, ControlThreadOp::Resume).expect("Failed to resume thread");
     println!("Thread created with ID: {}", tid);
 
     loop {
-        println!("Current time: {} ms", GicAndTimer::current_time_ms());
+        let counter = unsafe {
+            let counter_ptr = &raw mut GLOBAL_COUNTER;
+            *counter_ptr += 1;
+            *counter_ptr
+        };
+        println!(
+            "Current time: {} ms, counter: {}",
+            GicAndTimer::current_time_ms(),
+            counter
+        );
         // delay_ticks(500000000);
         sleep_sec(1);
     }

@@ -1,5 +1,8 @@
 use core::arch::asm;
-use kernel_api::{kernel_device, ControlThreadOp, KError, MemMapFlags, PhyMapFlags, Pid, Syscall};
+use kernel_api::{
+    kernel_device, ControlThreadOp, CreateThreadFlags, KError, MemMapFlags, PhyMapFlags, Pid,
+    Syscall,
+};
 use num_enum::FromPrimitive;
 
 pub unsafe fn exit(code: u32) -> ! {
@@ -143,12 +146,13 @@ pub fn delay_ticks(ticks: u64) {
     }
 }
 
-pub fn create_thread(func: fn() -> !) -> Result<Pid, KError> {
+pub fn create_thread(func: fn() -> !, flags: CreateThreadFlags) -> Result<Pid, KError> {
     let mut res: i64;
     unsafe {
         asm!(
         "svc #0",
         in("x0") func as u64,
+        in("x1") flags.bits(),
         in("x8") Syscall::CreateThread as u64,
         lateout("x0") res,
         );

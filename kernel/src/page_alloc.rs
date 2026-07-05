@@ -486,10 +486,22 @@ impl<T> PageBox<T> {
         unsafe { (self.slice.as_ptr() as *mut T).read() }
     }
 
-    pub fn leak(mut b: Self) -> &'static mut T {
+    pub fn into_raw(mut b: Self) -> (&'static mut T, usize) {
         let ptr = b.slice.as_mut_ptr() as *mut T;
+        let len = b.slice.len();
         mem::forget(b);
-        unsafe { &mut *ptr }
+        // SAFETY: We just owned this value, and destroyed the box
+        (unsafe { &mut *ptr }, len)
+    }
+
+    pub unsafe fn from_raw(ptr: *mut T, len: usize) -> Self {
+        Self {
+            slice: PageSlice {
+                buf: ptr as *mut (),
+                len,
+            },
+            _phantom_data: PhantomData,
+        }
     }
 }
 

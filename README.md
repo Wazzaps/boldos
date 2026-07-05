@@ -32,15 +32,15 @@ d00dfeed 00100000 00000040 00001db4 00000030 00000011 00000010 00000000
  init: Creating thread
  user: Creating thread 2
  init: Thread created with ID: 2
- init: Current time: 12 ms
+ init: Current time: 21 ms, counter: 1
  init: Hello from thread! My PID is 2
- init: Thread Current time: 13 ms
+ init: Thread Current time: 22 ms, counter: 1
  user: cpu idling for: 999ms
- init: Current time: 1013 ms
- init: Thread Current time: 1013 ms
+ init: Current time: 1023 ms, counter: 2
+ init: Thread Current time: 1023 ms, counter: 2
  user: cpu idling for: 1000ms
- init: Current time: 2015 ms
- init: Thread Current time: 2015 ms
+ init: Current time: 2025 ms, counter: 3
+ init: Thread Current time: 2025 ms, counter: 3
  user: cpu idling for: 1000ms
 
 ```
@@ -81,6 +81,7 @@ d00dfeed 00100000 00000040 00001db4 00000030 00000011 00000010 00000000
     - [ ] RNG POC
 - [x] Spawn multiple threads
 - [x] Preemptive scheduling (Round-Robin)
+- [x] Shared memory with shared page tables (i.e. threads sharing a memory space)
 - [ ] IPC
   - [ ] Shared memory
   - [ ] Futex

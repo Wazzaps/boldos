@@ -3,23 +3,30 @@ use crate::aarch64::mmu;
 use crate::aarch64::mmu::{tlb_flush, PageTable};
 use crate::drv::arm_gic::{timer_get_absolute_time_ms, timer_set_timeout};
 use crate::drv::qemu_console::puts;
+use crate::intrusive_rc::IntrusiveRc;
 use crate::page_alloc::{add_memory_node, PageBox, PhyAddr, PAGE_ALLOC, PAGE_SIZE};
 use crate::{drv, page_alloc, println};
 use aarch64_cpu::registers::{ELR_EL1, SPSR_EL1, SP_EL0, TTBR0_EL1};
 use core::arch::asm;
+use core::marker::PhantomData;
 use core::mem::{forget, MaybeUninit};
+use core::ops::{Deref, DerefMut};
 use kernel_api::kernel_device::KernelDeviceId;
-use kernel_api::{kernel_device, ControlThreadOp, KError, MemMapFlags, PhyMapFlags, Pid, Syscall};
+use kernel_api::{
+    kernel_device, ControlThreadOp, CreateThreadFlags, KError, MemMapFlags, PhyMapFlags, Pid,
+    Syscall,
+};
 use tock_registers::interfaces::Writeable;
 use zerocopy::{FromZeros, IntoBytes};
 
 struct Thread {
-    page_table: PageBox<PageTable>,
+    page_table: IntrusiveRc<PageTable>,
     stack: PageBox<[u64; 1024]>, // 8KiB stack
     vals: ExceptionContext,
     sleep_deadline: u64,
     last_scheduled_time: u64,
     state: ThreadState,
+    locked: bool,
 }
 
 impl Thread {
@@ -33,6 +40,8 @@ impl Thread {
 
     pub unsafe fn enter(&mut self) -> ! {
         self.load();
+        // The guard that holds this lock won't be dropped, unlock it manually
+        self.locked = false;
         asm!("eret", options(noreturn))
     }
 
@@ -48,7 +57,7 @@ const DEFAULT_STACK_SIZE: u64 = 0x4000;
 impl Thread {
     fn new() -> Self {
         Self {
-            page_table: PageBox::new_zeroed(),
+            page_table: IntrusiveRc::uninit(),
             stack: PageBox::new_zeroed(),
             vals: ExceptionContext {
                 gpr: [0; 30],
@@ -60,6 +69,7 @@ impl Thread {
             sleep_deadline: 0,
             last_scheduled_time: 0,
             state: ThreadState::Paused,
+            locked: false,
         }
     }
 }
@@ -89,6 +99,16 @@ struct ThreadBlock {
     threads: [MaybeUninit<Thread>; THREAD_BLOCK_SIZE],
 }
 
+impl ThreadBlock {
+    /// # Safety
+    ///
+    /// The given index must be valid and the thread must be initialized
+    unsafe fn get_thread_unchecked(&self, idx: usize) -> ThreadLockGuard<'_> {
+        let thread = self.threads[idx].assume_init_ref() as *const Thread as *mut Thread;
+        ThreadLockGuard::lock(thread)
+    }
+}
+
 impl ThreadManager {
     unsafe fn init_global() {
         #[allow(static_mut_refs)]
@@ -99,9 +119,10 @@ impl ThreadManager {
         }));
 
         // Initialize the init thread
-        let (pid, thread) = mgr.create_thread();
+        let (pid, mut thread) = mgr.create_thread(None);
         thread.state = ThreadState::Running;
         thread.last_scheduled_time = timer_get_absolute_time_ms();
+        drop(thread);
         mgr.current_thread = pid;
     }
 
@@ -110,48 +131,70 @@ impl ThreadManager {
         THREAD_MANAGER.assume_init_mut()
     }
 
-    fn get_current_thread(&mut self) -> &mut Thread {
+    fn get_current_thread(&self) -> ThreadLockGuard<'_> {
         self.get_thread(self.current_thread)
     }
 
-    fn create_thread(&mut self) -> (Pid, &mut Thread) {
+    fn create_thread(&mut self, share_page_table: Option<Pid>) -> (Pid, ThreadLockGuard<'_>) {
         // TODO: this currently doesn't share the page table with the parent thread
         for pid in 0..THREAD_BLOCK_SIZE {
             let block_idx = pid / 64;
             let bit_idx = pid % 64;
             if self.thread_bitmap[block_idx] & (1 << bit_idx) == 0 {
                 println!(" user: Creating thread {}", pid + 1);
-                let thread = self.block.threads[pid].write(Thread::new());
+                self.block.threads[pid].write(Thread::new());
 
-                unsafe {
-                    for stack_page in (0..DEFAULT_STACK_SIZE).step_by(PAGE_SIZE) {
-                        let phy_addr = PhyAddr::from_virt(
-                            thread.stack.as_ptr().byte_offset(stack_page as isize),
-                        );
-                        thread.page_table.vmap_at(
-                            (DEFAULT_SP - DEFAULT_STACK_SIZE + stack_page) as usize,
-                            phy_addr,
+                let new_thread = unsafe {
+                    let mut new_thread = self.block.get_thread_unchecked(pid);
+
+                    if let Some(share_pid) = share_page_table {
+                        let mut share_thread = self.get_thread(share_pid);
+                        new_thread
+                            .page_table
+                            .init_pinned_sibling(&mut share_thread.page_table);
+
+                        let stack_base_phys = PhyAddr::from_virt(new_thread.stack.as_ptr());
+                        let stack_base_virt = new_thread.page_table.as_mut().vmap(
+                            stack_base_phys,
+                            DEFAULT_STACK_SIZE as usize,
                             DEFAULT_PAGE_FLAGS,
                         );
+                        new_thread.vals.sp = stack_base_virt as u64 + DEFAULT_STACK_SIZE;
+                    } else {
+                        // SAFETY: The thread will not move until it's dropped
+                        new_thread.page_table.init_pinned(PageBox::new_zeroed());
+
+                        for stack_page in (0..DEFAULT_STACK_SIZE).step_by(PAGE_SIZE) {
+                            let phy_addr = PhyAddr::from_virt(
+                                new_thread.stack.as_ptr().byte_offset(stack_page as isize),
+                            );
+                            new_thread.page_table.as_mut().vmap_at(
+                                (DEFAULT_SP - DEFAULT_STACK_SIZE + stack_page) as usize,
+                                phy_addr,
+                                DEFAULT_PAGE_FLAGS,
+                            );
+                        }
                     }
-                }
+
+                    new_thread
+                };
 
                 self.thread_bitmap[block_idx] |= 1 << bit_idx;
-                return ((pid + 1) as u32, thread);
+                return ((pid + 1) as u32, new_thread);
             }
         }
         panic!("No free thread slots");
     }
 
-    fn get_thread(&mut self, pid: Pid) -> &mut Thread {
+    fn get_thread(&self, pid: Pid) -> ThreadLockGuard<'_> {
         assert!(pid > 0, "Thread 0 is invalid");
-        let pid = pid - 1;
-        let block_idx = pid / 64;
-        let bit_idx = pid % 64;
+        let pid_idx = pid - 1;
+        let block_idx = pid_idx / 64;
+        let bit_idx = pid_idx % 64;
         if self.thread_bitmap[block_idx as usize] & (1 << bit_idx) == 0 {
-            panic!("Thread {pid} not found");
+            panic!("Thread {pid_idx} not found");
         }
-        unsafe { self.block.threads[pid as usize].assume_init_mut() }
+        unsafe { self.block.get_thread_unchecked(pid_idx as usize) }
     }
 
     fn get_next_deadline(&mut self) -> (Pid, u64) {
@@ -199,15 +242,16 @@ impl ThreadManager {
             //     self.current_thread, next_pid
             // );
             // Save current thread
-            let current_thread = self.get_current_thread();
+            let mut current_thread = self.get_current_thread();
             current_thread.save(e);
             if current_thread.state == ThreadState::Running {
                 current_thread.state = ThreadState::Runnable;
             }
+            drop(current_thread);
 
             // Switch to next thread
             self.current_thread = next_pid;
-            let next_thread = self.get_current_thread();
+            let mut next_thread = self.get_current_thread();
             next_thread.load();
             next_thread.last_scheduled_time = timer_get_absolute_time_ms();
             next_thread.state = ThreadState::Running;
@@ -230,6 +274,50 @@ impl ThreadManager {
     }
 }
 
+struct ThreadLockGuard<'a> {
+    thread: *mut Thread,
+    _phantom: PhantomData<&'a Thread>,
+}
+
+impl<'a> ThreadLockGuard<'a> {
+    /// # Safety
+    ///
+    /// The given thread must be valid
+    pub unsafe fn lock(thread: *mut Thread) -> Self {
+        // println!(" user: Locking thread {:?}", thread);
+        assert!(!(*thread).locked);
+        (*thread).locked = true;
+        Self {
+            thread,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<'a> Deref for ThreadLockGuard<'a> {
+    type Target = Thread;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.thread }
+    }
+}
+
+impl<'a> DerefMut for ThreadLockGuard<'a> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut *self.thread }
+    }
+}
+
+impl<'a> Drop for ThreadLockGuard<'a> {
+    fn drop(&mut self) {
+        unsafe {
+            // println!(" user: Unlocking thread {:?}", self.thread);
+            assert!((*self.thread).locked);
+            (*self.thread).locked = false;
+        }
+    }
+}
+
 const DEFAULT_PAGE_FLAGS: u64 = mmu::PT_RW_EL0 | // non-privileged
         mmu::PT_ISH | // inner shareable
         mmu::PT_MEM; // normal memory
@@ -242,7 +330,7 @@ unsafe fn map_init_binary(thread: &mut Thread) {
     code_slice.as_mut_slice()[..INIT_BIN.len()].copy_from_slice(INIT_BIN);
 
     for code_page in 0..INIT_BIN.len().div_ceil(PAGE_SIZE) {
-        thread.page_table.vmap_at(
+        thread.page_table.as_mut().vmap_at(
             DEFAULT_PC as usize + code_page * PAGE_SIZE,
             PhyAddr::from_virt(
                 code_slice
@@ -259,8 +347,8 @@ pub unsafe fn start() {
     println!(" user: Starting usermode");
 
     ThreadManager::init_global();
-    let thread = ThreadManager::get_global().get_current_thread();
-    map_init_binary(thread);
+    let mut thread = ThreadManager::get_global().get_current_thread();
+    map_init_binary(&mut thread);
     thread.enter();
 }
 
@@ -295,7 +383,7 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
             let phy_addr = e.gpr[0];
             let len = e.gpr[1];
             let flags = PhyMapFlags::from_bits_truncate(e.gpr[2]);
-            let thread = ThreadManager::get_global().get_current_thread();
+            let mut thread = ThreadManager::get_global().get_current_thread();
 
             let mut page_flags: u64 = mmu::PT_ISH; // inner shareable
             if flags.contains(PhyMapFlags::ReadWrite) {
@@ -309,15 +397,16 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                 page_flags |= mmu::PT_MEM;
             }
 
-            e.gpr[0] = thread
-                .page_table
-                .vmap(PhyAddr(phy_addr as usize), len as usize, page_flags)
-                as u64;
+            e.gpr[0] = thread.page_table.as_mut().vmap(
+                PhyAddr(phy_addr as usize),
+                len as usize,
+                page_flags,
+            ) as u64;
         }
         Syscall::MemMap => {
             let len = e.gpr[0];
             let flags = MemMapFlags::from_bits_truncate(e.gpr[1]);
-            let thread = ThreadManager::get_global().get_current_thread();
+            let mut thread = ThreadManager::get_global().get_current_thread();
 
             let mut page_flags: u64 = mmu::PT_ISH | mmu::PT_MEM; // inner shareable
             if flags.contains(MemMapFlags::ReadWrite) {
@@ -329,15 +418,21 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
             // TODO: support fragmented physical memory
             let page_slice = page_alloc::alloc(len.div_ceil(PAGE_SIZE as u64) as usize);
             let phy_addr = PhyAddr::from_virt(page_slice.as_ptr());
-            e.gpr[0] = thread.page_table.vmap(phy_addr, len as usize, page_flags) as u64;
+            e.gpr[0] = thread
+                .page_table
+                .as_mut()
+                .vmap(phy_addr, len as usize, page_flags) as u64;
             forget(page_slice); // Don't free the memory we just allocated
         }
         Syscall::MemUnmap => {
             let virt_addr = e.gpr[0];
             let len = e.gpr[1];
-            let thread = ThreadManager::get_global().get_current_thread();
+            let mut thread = ThreadManager::get_global().get_current_thread();
 
-            thread.page_table.vunmap(virt_addr as usize, len as usize);
+            thread
+                .page_table
+                .as_mut()
+                .vunmap(virt_addr as usize, len as usize);
 
             // TODO: if within range of ram, free the corresponding PageSlice
 
@@ -386,13 +481,13 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
             // println!(" user: Sleeping for {} seconds", sec);
             let mgr = ThreadManager::get_global();
             {
-                let thread = mgr.get_current_thread();
+                let mut thread = mgr.get_current_thread();
                 thread.sleep_deadline = deadline;
                 thread.state = ThreadState::Sleeping;
             }
             mgr.schedule(e);
             {
-                let thread = mgr.get_current_thread();
+                let mut thread = mgr.get_current_thread();
                 if thread.state == ThreadState::Sleeping {
                     thread.state = ThreadState::Running;
                 }
@@ -401,9 +496,21 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
         }
         Syscall::CreateThread => {
             let func = e.gpr[0];
-            let (pid, thread) = ThreadManager::get_global().create_thread();
+            let flags = CreateThreadFlags::from_bits_truncate(e.gpr[1]);
+
+            let mgr = ThreadManager::get_global();
+            let share_page_table = if flags.contains(CreateThreadFlags::SharePageTable) {
+                Some(mgr.current_thread)
+            } else {
+                None
+            };
+
+            let (pid, mut thread) = mgr.create_thread(share_page_table.clone());
             thread.vals.pc = func;
-            map_init_binary(thread);
+            if share_page_table.is_none() {
+                // TODO: Load executables in user mode
+                map_init_binary(&mut thread);
+            }
             e.gpr[0] = pid as u64;
             return;
         }

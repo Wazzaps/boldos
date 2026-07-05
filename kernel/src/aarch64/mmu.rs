@@ -57,7 +57,7 @@ impl PageTable {
         if raw == 0 {
             // Allocate new page table
             // TODO: Doesn't handle oom
-            let new_table = PageBox::leak(PageBox::<PageTable>::new_zeroed());
+            let (new_table, _) = PageBox::into_raw(PageBox::<PageTable>::new_zeroed());
             let phy_addr = PhyAddr::from_virt(new_table);
             #[cfg(feature = "log_mmu")]
             println!(
@@ -65,6 +65,7 @@ impl PageTable {
                 phy_addr, &self.0 as *const u64 as u64, idx
             );
             self.0[idx] = phy_addr.0 as u64 | flags;
+            // SAFETY: We just allocated it
             new_table
         } else {
             // Return existing page table
