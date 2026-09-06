@@ -81,6 +81,7 @@ d00dfeed 00100000 00000040 00001db4 00000030 00000011 00000010 00000000
 - [x] Spawn multiple threads
 - [x] Preemptive scheduling (Round-Robin)
 - [x] Shared memory with shared page tables (i.e. threads sharing a memory space)
+- [x] Basic growable heap allocator in usermode
 - [ ] IPC
   - [ ] Shared memory
   - [ ] Futex

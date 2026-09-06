@@ -21,7 +21,7 @@ use zerocopy::{FromZeros, IntoBytes};
 
 struct Thread {
     page_table: IntrusiveRc<PageTable>,
-    stack: PageBox<[u64; 1024]>, // 8KiB stack
+    stack: PageBox<[u64; 2048]>, // 16KiB stack
     vals: ExceptionContext,
     sleep_deadline: u64,
     last_scheduled_time: u64,

@@ -1,7 +1,10 @@
 #![no_std]
 #![no_main]
 
+extern crate alloc;
+
 mod drv;
+mod heap;
 pub(crate) mod utils;
 
 use crate::drv::gic::GicAndTimer;
@@ -94,6 +97,10 @@ fn main() {
 
     // Find all memory nodes
     find_mem_nodes(&dtb).expect("Failed to parse device tree");
+
+    // Try the heap
+    let v = alloc::vec![1, 2, 3];
+    println!("Heap vector: {:?}", v);
 
     // Find all devices
     let _gic_and_timer = GicAndTimer::find_and_init(&dtb).expect("Failed to parse device tree");

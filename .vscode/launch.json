@@ -6,7 +6,8 @@
             "type": "lldb",
             "request": "custom",
             "targetCreateCommands": [
-                "target create ${workspaceFolder}/kernel/target/aarch64-none-elf/debug/kernel.elf"
+                "target create ${workspaceFolder}/kernel/target/aarch64-none-elf/debug/kernel.elf",
+                "target modules add ${workspaceFolder}/init/target/aarch64-none-elf/release/init.elf",
             ],
             "processCreateCommands": [
                 "gdb-remote localhost:1234"
