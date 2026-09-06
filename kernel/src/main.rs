@@ -12,8 +12,8 @@ use tock_registers::interfaces::Readable;
 
 pub mod aarch64;
 mod drv;
-pub mod page_alloc;
 pub mod intrusive_rc;
+pub mod page_alloc;
 
 type InitFn = unsafe extern "C" fn() -> !;
 
