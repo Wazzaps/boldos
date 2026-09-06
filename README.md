@@ -69,9 +69,8 @@ d00dfeed 00100000 00000040 00001db4 00000030 00000011 00000010 00000000
   - [x] ARM Arch Timer
 - [ ] Simple drivers from usermode
   - [x] Monotonic Time 
-  - [ ] QEMU fw_cfg
-    - [ ] Kernel commandline
-    - [ ] Initrd block device
+  - [x] QEMU fw_cfg
+    - [x] Initrd blob
   - [ ] Virtio
     - [ ] Disk (block device)
     - [ ] Console

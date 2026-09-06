@@ -4,7 +4,8 @@
 mod drv;
 pub(crate) mod utils;
 
-use crate::drv::GicAndTimer;
+use crate::drv::gic::GicAndTimer;
+use crate::drv::qemu_fwcfg::QemuFwCfg;
 use crate::utils::{
     control_thread, create_thread, download_more_ram, dump_hex_slice, exit, get_pid, mem_unmap,
     phy_map, sleep_sec, FmtWriteAdapter,
@@ -96,6 +97,8 @@ fn main() {
 
     // Find all devices
     let _gic_and_timer = GicAndTimer::find_and_init(&dtb).expect("Failed to parse device tree");
+    let mut _qemu_fwcfg = QemuFwCfg::find_and_init(&dtb).expect("Failed to parse device tree");
+    _qemu_fwcfg.dump_files();
 
     println!("Creating thread");
     let tid = create_thread(
