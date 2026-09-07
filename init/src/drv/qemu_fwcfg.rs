@@ -21,7 +21,7 @@ impl QemuFwCfg {
                 let reg = prop.u64(0)?;
                 let size = prop.u64(1)?;
                 println!("qemu_fwcfg: base: {reg:x} | size: {size:x}");
-                let base = unsafe {
+                let (base, _) = unsafe {
                     phy_map(
                         reg as usize,
                         0x1000,

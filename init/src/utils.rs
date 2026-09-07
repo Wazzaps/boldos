@@ -31,8 +31,9 @@ pub unsafe fn phy_map(
     phy_addr: usize,
     len: usize,
     flags: PhyMapFlags,
-) -> Result<*const (), KError> {
+) -> Result<(*const (), u64), KError> {
     let mut virt_addr: u64;
+    let mut out_phy_addr: u64;
     unsafe {
         asm!(
         "svc #0
@@ -42,12 +43,13 @@ pub unsafe fn phy_map(
         in("x2") flags.bits(),
         in("x8") Syscall::PhyMap as u64,
         lateout("x0") virt_addr,
+        lateout("x1") out_phy_addr,
         );
     }
     if (virt_addr as i64) < 0 {
         Err(KError::from_primitive(virt_addr as i32))
     } else {
-        Ok(virt_addr as _)
+        Ok((virt_addr as _, out_phy_addr))
     }
 }
 
@@ -192,6 +194,23 @@ pub fn get_pid() -> Pid {
         );
     }
     res as Pid
+}
+
+pub fn virt_to_phys(virt_addr: *const ()) -> Result<u64, KError> {
+    let mut res: i64;
+    unsafe {
+        asm!(
+        "svc #0",
+        in("x0") virt_addr as u64,
+        in("x8") Syscall::VirtToPhys as u64,
+        lateout("x0") res,
+        );
+    }
+    if res < 0 {
+        Err(KError::from_primitive(res as i32))
+    } else {
+        Ok(res as u64)
+    }
 }
 
 pub(crate) struct FmtWriteAdapter;

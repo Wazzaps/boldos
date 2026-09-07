@@ -19,6 +19,7 @@ pub enum Syscall {
     CreateThread = 8,
     GetPid = 9,
     ControlThread = 10,
+    VirtToPhys = 11,
 }
 
 #[derive(FromPrimitive, IntoPrimitive, Eq, PartialEq, Copy, Clone, Debug)]
@@ -29,6 +30,7 @@ pub enum KError {
     AlreadyExists = -1,
     OOM = -2,
     InvalidArgument = -3,
+    InvalidAddress = -4,
 }
 
 impl Into<u64> for KError {

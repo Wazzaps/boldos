@@ -397,11 +397,25 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                 page_flags |= mmu::PT_MEM;
             }
 
-            e.gpr[0] = thread.page_table.as_mut().vmap(
-                PhyAddr(phy_addr as usize),
-                len as usize,
-                page_flags,
-            ) as u64;
+            if phy_addr == u64::MAX {
+                // We get to pick the address
+                let page_slice = page_alloc::alloc(len.div_ceil(PAGE_SIZE as u64) as usize);
+                let phy_addr = PhyAddr::from_virt(page_slice.as_ptr());
+                e.gpr[0] = thread
+                    .page_table
+                    .as_mut()
+                    .vmap(phy_addr, len as usize, page_flags) as u64;
+                e.gpr[1] = phy_addr.0 as u64;
+                forget(page_slice); // Don't free the memory we just allocated
+            } else {
+                // Must map a specific physical address
+                e.gpr[0] = thread.page_table.as_mut().vmap(
+                    PhyAddr(phy_addr as usize),
+                    len as usize,
+                    page_flags,
+                ) as u64;
+                e.gpr[1] = phy_addr as u64;
+            }
         }
         Syscall::MemMap => {
             let len = e.gpr[0];
@@ -550,6 +564,16 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                     return;
                 }
             }
+        }
+        Syscall::VirtToPhys => {
+            let virt_addr = e.gpr[0];
+            let thread = ThreadManager::get_global().get_current_thread();
+            if let Some(phy_addr) = thread.page_table.as_ref().virt_to_phys(virt_addr as usize) {
+                e.gpr[0] = phy_addr.0 as u64;
+            } else {
+                e.gpr[0] = KError::InvalidAddress.into();
+            }
+            return;
         }
     }
 }

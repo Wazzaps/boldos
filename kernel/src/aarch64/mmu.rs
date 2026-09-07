@@ -98,6 +98,11 @@ impl PageTable {
         let l3 = l2.get_mut_or_alloc((vaddr >> 21) % 512, TABLE_FLAGS);
         let entry = &mut l3.0[(vaddr >> 12) % 512];
         assert_eq!(*entry, 0, "Tried to map memory (vaddr={:?} paddr={:?}) that is already occupied with entry: 0x{:016x}", vaddr, paddr, *entry);
+        assert!(
+            paddr.0.is_multiple_of(0x1000),
+            "paddr is not a multiple of 4096: {:x}",
+            paddr.0
+        );
         *entry = paddr.0 as u64 | COMMON_FLAGS | attrs;
 
         // TODO: unsafe { asm!("tlbi VAAE1, {}", in(reg) (vaddr as u64) >> 12) };
@@ -295,6 +300,42 @@ impl PageTable {
             ContiguousRegion::Free {
                 len_bytes: current_len,
             }
+        }
+    }
+
+    pub fn virt_to_phys(&self, virt_addr: usize) -> Option<PhyAddr> {
+        const PHYS_MASK: usize = 0x7FFFFFF000;
+
+        if virt_addr >= 0x8000000000 {
+            return None;
+        }
+
+        match self.get(virt_addr >> 39) {
+            PageGetResult::Free => None,
+            PageGetResult::Block => Some(PhyAddr(
+                (self.0[virt_addr >> 39] as usize & PHYS_MASK) | (virt_addr & 0x7FFFFFFFFF),
+            )),
+            PageGetResult::PageTable(l1) => match l1.get((virt_addr >> 30) % 512) {
+                PageGetResult::Free => None,
+                PageGetResult::Block => Some(PhyAddr(
+                    (l1.0[(virt_addr >> 30) % 512] as usize & PHYS_MASK) | (virt_addr & 0x3FFFFFFF),
+                )),
+                PageGetResult::PageTable(l2) => match l2.get((virt_addr >> 21) % 512) {
+                    PageGetResult::Free => None,
+                    PageGetResult::Block => Some(PhyAddr(
+                        (l2.0[(virt_addr >> 21) % 512] as usize & PHYS_MASK)
+                            | (virt_addr & 0x1FFFFF),
+                    )),
+                    PageGetResult::PageTable(l3) => {
+                        let raw = l3.0[(virt_addr >> 12) % 512];
+                        if raw == 0 {
+                            None
+                        } else {
+                            Some(PhyAddr((raw as usize & PHYS_MASK) | (virt_addr & 0xFFF)))
+                        }
+                    }
+                },
+            },
         }
     }
 }

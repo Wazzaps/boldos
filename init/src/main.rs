@@ -28,7 +28,7 @@ fn map_dtb() -> Result<DevTree<'static>, DevTreeError> {
         // Map just the first page of the DTB, so we can get its size
         const DTB_ADDR: usize = 0x40000000;
         const MAP_LEN: usize = 0x1000;
-        let dtb = phy_map(DTB_ADDR, MAP_LEN, PhyMapFlags::empty()).unwrap() as *const u8;
+        let dtb = phy_map(DTB_ADDR, MAP_LEN, PhyMapFlags::empty()).unwrap().0 as *const u8;
         let dtb_len = {
             let dtb_len =
                 DevTree::read_totalsize(&*slice_from_raw_parts(dtb, DevTree::MIN_HEADER_SIZE))?;
@@ -40,7 +40,7 @@ fn map_dtb() -> Result<DevTree<'static>, DevTreeError> {
         mem_unmap(dtb as _, MAP_LEN).unwrap();
 
         // Map the whole DTB
-        let dtb = phy_map(DTB_ADDR, dtb_len, PhyMapFlags::empty()).unwrap() as *const u8;
+        let dtb = phy_map(DTB_ADDR, dtb_len, PhyMapFlags::empty()).unwrap().0 as *const u8;
         Ok(DevTree::new(&*slice_from_raw_parts(dtb, dtb_len))?)
     }
 }
@@ -106,6 +106,7 @@ fn main() {
     let _gic_and_timer = GicAndTimer::find_and_init(&dtb).expect("Failed to parse device tree");
     let mut _qemu_fwcfg = QemuFwCfg::find_and_init(&dtb).expect("Failed to parse device tree");
     _qemu_fwcfg.dump_files();
+    drv::virtio::virtio_experiment(&dtb);
 
     println!("Creating thread");
     let tid = create_thread(
