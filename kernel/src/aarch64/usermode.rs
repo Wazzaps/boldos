@@ -8,6 +8,7 @@ use crate::page_alloc::{add_memory_node, PageBox, PhyAddr, PAGE_ALLOC, PAGE_SIZE
 use crate::{drv, page_alloc, println};
 use aarch64_cpu::registers::{ELR_EL1, SPSR_EL1, SP_EL0, TTBR0_EL1};
 use core::arch::asm;
+use core::cell::UnsafeCell;
 use core::marker::PhantomData;
 use core::mem::{forget, MaybeUninit};
 use core::ops::{Deref, DerefMut};
@@ -41,7 +42,9 @@ impl Thread {
     pub unsafe fn enter(&mut self) -> ! {
         self.load();
         // The guard that holds this lock won't be dropped, unlock it manually
+        assert!(self.locked);
         self.locked = false;
+        // println!(" user: Entering thread {:?}", &raw const self);
         asm!("eret", options(noreturn))
     }
 
@@ -96,7 +99,7 @@ struct ThreadManager {
 
 #[derive(FromZeros)]
 struct ThreadBlock {
-    threads: [MaybeUninit<Thread>; THREAD_BLOCK_SIZE],
+    threads: UnsafeCell<[MaybeUninit<Thread>; THREAD_BLOCK_SIZE]>,
 }
 
 impl ThreadBlock {
@@ -104,7 +107,12 @@ impl ThreadBlock {
     ///
     /// The given index must be valid and the thread must be initialized
     unsafe fn get_thread_unchecked(&self, idx: usize) -> ThreadLockGuard<'_> {
-        let thread = self.threads[idx].assume_init_ref() as *const Thread as *mut Thread;
+        let thread = (*self.threads.get())[idx].assume_init_mut() as *mut Thread;
+        ThreadLockGuard::lock(thread)
+    }
+
+    unsafe fn new_thread(&self, idx: usize) -> ThreadLockGuard<'_> {
+        let thread = (*self.threads.get())[idx].write(Thread::new()) as *mut Thread;
         ThreadLockGuard::lock(thread)
     }
 }
@@ -142,10 +150,9 @@ impl ThreadManager {
             let bit_idx = pid % 64;
             if self.thread_bitmap[block_idx] & (1 << bit_idx) == 0 {
                 println!(" user: Creating thread {}", pid + 1);
-                self.block.threads[pid].write(Thread::new());
 
                 let new_thread = unsafe {
-                    let mut new_thread = self.block.get_thread_unchecked(pid);
+                    let mut new_thread = self.block.new_thread(pid);
 
                     if let Some(share_pid) = share_page_table {
                         let mut share_thread = self.get_thread(share_pid);
