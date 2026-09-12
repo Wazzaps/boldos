@@ -73,7 +73,7 @@ d00dfeed 00100000 00000040 00001db4 00000030 00000011 00000010 00000000
     - [x] Initrd blob
   - [ ] Virtio (based on virtio-drivers crate)
     - [x] Disk (block device)
-    - [ ] 9P filesystem
+    - [x] 9P filesystem
     - [ ] Console
     - [ ] Network POC
     - [ ] Framebuffer POC
