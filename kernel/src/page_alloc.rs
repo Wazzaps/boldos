@@ -11,7 +11,7 @@ use zerocopy::FromZeros;
 pub const PAGE_SIZE: usize = 4096;
 
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, FromZeros)]
 pub struct PhyAddr(pub usize);
 
 impl PhyAddr {

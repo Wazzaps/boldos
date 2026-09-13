@@ -8,20 +8,21 @@ mod heap;
 pub(crate) mod utils;
 
 use crate::drv::gic::GicAndTimer;
-use crate::drv::qemu_fwcfg::QemuFwCfg;
 use crate::utils::{
-    control_thread, create_thread, download_more_ram, dump_hex_slice, exit, get_pid, mem_unmap,
-    phy_map, sleep_sec, FmtWriteAdapter,
+    control_thread, create_thread, download_more_ram, dump_hex_slice, exit, futex, get_pid,
+    mem_unmap, phy_map, sleep_sec, FmtWriteAdapter,
 };
 use core::fmt::Write;
 use core::panic::PanicInfo;
 use core::ptr::slice_from_raw_parts;
+use core::sync::atomic::{AtomicU32, Ordering};
 use fdt_rs::base::DevTree;
 use fdt_rs::error::DevTreeError;
 use fdt_rs::prelude::{FallibleIterator, PropReader};
-use kernel_api::{ControlThreadOp, CreateThreadFlags, PhyMapFlags};
+use kernel_api::{ControlThreadOp, CreateThreadFlags, FutexOp, PhyMapFlags};
 
 static mut GLOBAL_COUNTER: u64 = 0;
+static FUTEX_WORD: AtomicU32 = AtomicU32::new(0);
 
 fn map_dtb() -> Result<DevTree<'static>, DevTreeError> {
     unsafe {
@@ -104,9 +105,9 @@ fn main() {
 
     // Find all devices
     let _gic_and_timer = GicAndTimer::find_and_init(&dtb).expect("Failed to parse device tree");
-    let mut _qemu_fwcfg = QemuFwCfg::find_and_init(&dtb).expect("Failed to parse device tree");
-    _qemu_fwcfg.dump_files();
-    drv::virtio::virtio_experiment(&dtb);
+    // let mut _qemu_fwcfg = QemuFwCfg::find_and_init(&dtb).expect("Failed to parse device tree");
+    // _qemu_fwcfg.dump_files();
+    // drv::virtio::virtio_experiment(&dtb);
 
     println!("Creating thread");
     let tid = create_thread(
@@ -129,6 +130,26 @@ fn main() {
     control_thread(tid, ControlThreadOp::Resume).expect("Failed to resume thread");
     println!("Thread created with ID: {}", tid);
 
+    println!("Creating futex waiter thread");
+    let futex_waiter_tid = create_thread(
+        || {
+            println!("Hello from futex waiter thread! My PID is {}", get_pid());
+            futex(FUTEX_WORD.as_ptr(), FutexOp::WAIT, 0).unwrap();
+            println!(
+                "Futex waiter thread woke up, value: {}",
+                FUTEX_WORD.load(Ordering::Relaxed)
+            );
+
+            loop {
+                sleep_sec(1);
+            }
+        },
+        CreateThreadFlags::SharePageTable,
+    )
+    .expect("Failed to create thread");
+    control_thread(futex_waiter_tid, ControlThreadOp::Resume).expect("Failed to resume thread");
+    println!("Futex waiter thread created with ID: {}", futex_waiter_tid);
+
     loop {
         let counter = unsafe {
             let counter_ptr = &raw mut GLOBAL_COUNTER;
@@ -140,6 +161,13 @@ fn main() {
             GicAndTimer::current_time_ms(),
             counter
         );
+
+        // Wake up the futex waiter thread
+        if counter == 3 {
+            FUTEX_WORD.store(123, Ordering::Relaxed);
+            futex(FUTEX_WORD.as_ptr(), FutexOp::WAKE, u32::MAX).unwrap();
+        }
+
         // delay_ticks(500000000);
         sleep_sec(1);
     }

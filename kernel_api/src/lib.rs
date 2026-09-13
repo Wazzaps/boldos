@@ -20,6 +20,7 @@ pub enum Syscall {
     GetPid = 9,
     ControlThread = 10,
     VirtToPhys = 11,
+    Futex = 12,
 }
 
 #[derive(FromPrimitive, IntoPrimitive, Eq, PartialEq, Copy, Clone, Debug)]
@@ -31,6 +32,7 @@ pub enum KError {
     OOM = -2,
     InvalidArgument = -3,
     InvalidAddress = -4,
+    TryAgain = -5,
 }
 
 impl Into<u64> for KError {
@@ -82,5 +84,9 @@ bitflags! {
     }
     pub struct CreateThreadFlags: u64 {
         const SharePageTable = 1 << 0;
+    }
+    pub struct FutexOp: u64 {
+        const WAIT = 0;
+        const WAKE = 1;
     }
 }

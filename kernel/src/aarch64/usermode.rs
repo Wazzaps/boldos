@@ -8,14 +8,14 @@ use crate::page_alloc::{add_memory_node, PageBox, PhyAddr, PAGE_ALLOC, PAGE_SIZE
 use crate::{drv, page_alloc, println};
 use aarch64_cpu::registers::{ELR_EL1, SPSR_EL1, SP_EL0, TTBR0_EL1};
 use core::arch::asm;
-use core::cell::UnsafeCell;
+use core::cell::{Cell, UnsafeCell};
 use core::marker::PhantomData;
 use core::mem::{forget, MaybeUninit};
 use core::ops::{Deref, DerefMut};
 use kernel_api::kernel_device::KernelDeviceId;
 use kernel_api::{
-    kernel_device, ControlThreadOp, CreateThreadFlags, KError, MemMapFlags, PhyMapFlags, Pid,
-    Syscall,
+    kernel_device, ControlThreadOp, CreateThreadFlags, FutexOp, KError, MemMapFlags, PhyMapFlags,
+    Pid, Syscall,
 };
 use tock_registers::interfaces::Writeable;
 use zerocopy::{FromZeros, IntoBytes};
@@ -80,6 +80,7 @@ impl Thread {
 #[derive(Debug, PartialEq)]
 enum ThreadState {
     Sleeping,
+    FutexWaiting,
     Runnable,
     Running,
     Paused,
@@ -89,12 +90,16 @@ static INIT_BIN: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/init.bin"));
 
 static mut THREAD_MANAGER: MaybeUninit<PageBox<ThreadManager>> = MaybeUninit::uninit();
 const THREAD_BLOCK_SIZE: usize = 128;
+const FUTEX_BLOCK_SIZE: usize = 256;
 const SCHEDULE_INTERVAL_MS: u64 = 30;
 
 struct ThreadManager {
     block: PageBox<ThreadBlock>,
     thread_bitmap: [u64; THREAD_BLOCK_SIZE / 64],
     current_thread: u32,
+
+    futexes_locked: Cell<bool>,
+    active_futexes: PageBox<FutexBlock>,
 }
 
 #[derive(FromZeros)]
@@ -124,6 +129,9 @@ impl ThreadManager {
             block: PageBox::new_zeroed(),
             thread_bitmap: [0; THREAD_BLOCK_SIZE / 64],
             current_thread: 0,
+
+            futexes_locked: Cell::new(false),
+            active_futexes: PageBox::new_zeroed(),
         }));
 
         // Initialize the init thread
@@ -218,6 +226,7 @@ impl ThreadManager {
             let thread = self.get_thread(pid as Pid + 1);
             if (thread.state == ThreadState::Running && !is_current_thread)
                 || thread.state == ThreadState::Paused
+                || thread.state == ThreadState::FutexWaiting
             {
                 continue;
             }
@@ -278,6 +287,43 @@ impl ThreadManager {
             timer_set_timeout(sleep_left);
             unsafe { asm!("wfi") }
         }
+
+        assert_ne!(
+            self.get_current_thread().state,
+            ThreadState::Sleeping,
+            "Active thread is sleeping at the end of schedule"
+        );
+    }
+
+    unsafe fn add_futex_waiter(&self, phy_addr: PhyAddr, pid: Pid, value: u32) {
+        for i in 0..FUTEX_BLOCK_SIZE {
+            let futex = self.active_futexes.futexes[i].get();
+            if (*futex).phys_addr.0 == 0 {
+                (*futex).phys_addr = phy_addr;
+                (*futex).pid = pid;
+                (*futex).value = value;
+                return;
+            }
+        }
+        panic!("Futex block full");
+    }
+
+    unsafe fn wake_futex_waiters(&self, phy_addr: PhyAddr, word_value: u32, mut wake_count: u32) {
+        for i in 0..FUTEX_BLOCK_SIZE {
+            if wake_count == 0 {
+                return;
+            }
+            let futex = self.active_futexes.futexes[i].get().as_mut_unchecked();
+            if futex.phys_addr.0 == phy_addr.0 && futex.value != word_value {
+                wake_count -= 1;
+                let mut thread = self.get_thread(futex.pid);
+                assert_eq!(thread.state, ThreadState::FutexWaiting);
+                thread.state = ThreadState::Runnable;
+                futex.phys_addr = PhyAddr(0);
+                futex.pid = 0;
+                futex.value = 0;
+            }
+        }
     }
 }
 
@@ -323,6 +369,18 @@ impl<'a> Drop for ThreadLockGuard<'a> {
             (*self.thread).locked = false;
         }
     }
+}
+
+#[derive(FromZeros)]
+struct FutexBlock {
+    futexes: [UnsafeCell<Futex>; FUTEX_BLOCK_SIZE],
+}
+
+#[derive(FromZeros)]
+struct Futex {
+    phys_addr: PhyAddr,
+    pid: Pid,
+    value: u32,
 }
 
 const DEFAULT_PAGE_FLAGS: u64 = mmu::PT_RW_EL0 | // non-privileged
@@ -507,12 +565,6 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                 thread.state = ThreadState::Sleeping;
             }
             mgr.schedule(e);
-            {
-                let mut thread = mgr.get_current_thread();
-                if thread.state == ThreadState::Sleeping {
-                    thread.state = ThreadState::Running;
-                }
-            }
             e.gpr[0] = 0;
         }
         Syscall::CreateThread => {
@@ -581,6 +633,64 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                 e.gpr[0] = KError::InvalidAddress.into();
             }
             return;
+        }
+        Syscall::Futex => {
+            let word = e.gpr[0];
+            let op = FutexOp::from_bits(e.gpr[1]).expect("Invalid futex operation");
+            let val = e.gpr[2] as u32;
+            let mgr = ThreadManager::get_global();
+
+            if op.bits() == FutexOp::WAKE.bits() {
+                // TODO: all of this is only atomic because we are single core. Use proper spinlocks.
+
+                let thread = mgr.get_current_thread();
+                let Some(phy_addr) = thread.page_table.as_ref().virt_to_phys(word as usize) else {
+                    e.gpr[0] = KError::InvalidAddress.into();
+                    return;
+                };
+                println!(" user: Futex: {:#x?}", phy_addr);
+
+                assert!(!mgr.futexes_locked.get());
+                mgr.futexes_locked.set(true);
+
+                let mut word_value: u32 = 0;
+                copy_from_user(word as usize, 4, word_value.as_mut_bytes());
+                mgr.wake_futex_waiters(phy_addr, word_value, val);
+
+                assert!(mgr.futexes_locked.get());
+                mgr.futexes_locked.set(false);
+            } else if op.bits() == FutexOp::WAIT.bits() {
+                // TODO: all of this is only atomic because we are single core. Use proper spinlocks.
+
+                let mut thread = mgr.get_current_thread();
+                let Some(phy_addr) = thread.page_table.as_ref().virt_to_phys(word as usize) else {
+                    e.gpr[0] = KError::InvalidAddress.into();
+                    return;
+                };
+                println!(" user: Futex: {:#x?}", phy_addr);
+
+                assert!(!mgr.futexes_locked.get());
+                mgr.futexes_locked.set(true);
+
+                let mut word_value: u32 = 0;
+                copy_from_user(word as usize, 4, word_value.as_mut_bytes());
+                if word_value != val {
+                    mgr.futexes_locked.set(false);
+                    e.gpr[0] = KError::TryAgain.into();
+                    return;
+                }
+                mgr.add_futex_waiter(phy_addr, mgr.current_thread, val);
+                thread.state = ThreadState::FutexWaiting;
+
+                assert!(mgr.futexes_locked.get());
+                mgr.futexes_locked.set(false);
+
+                drop(thread);
+                mgr.schedule(e);
+            } else {
+                e.gpr[0] = KError::InvalidArgument.into();
+                return;
+            }
         }
     }
 }

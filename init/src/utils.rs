@@ -1,7 +1,7 @@
 use core::arch::asm;
 use kernel_api::{
-    kernel_device, ControlThreadOp, CreateThreadFlags, KError, MemMapFlags, PhyMapFlags, Pid,
-    Syscall,
+    kernel_device, ControlThreadOp, CreateThreadFlags, FutexOp, KError, MemMapFlags, PhyMapFlags,
+    Pid, Syscall,
 };
 use num_enum::FromPrimitive;
 
@@ -210,6 +210,25 @@ pub fn virt_to_phys(virt_addr: *const ()) -> Result<u64, KError> {
         Err(KError::from_primitive(res as i32))
     } else {
         Ok(res as u64)
+    }
+}
+
+pub fn futex(word: *const u32, op: FutexOp, val: u32) -> Result<(), KError> {
+    let mut res: i64;
+    unsafe {
+        asm!(
+        "svc #0",
+        in("x0") word as u64,
+        in("x1") op.bits(),
+        in("x2") val as u64,
+        in("x8") Syscall::Futex as u64,
+        lateout("x0") res,
+        );
+    }
+    if res < 0 {
+        Err(KError::from_primitive(res as i32))
+    } else {
+        Ok(())
     }
 }
 
