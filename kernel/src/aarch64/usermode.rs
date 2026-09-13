@@ -5,7 +5,7 @@ use crate::drv::arm_gic::{timer_get_absolute_time_ms, timer_set_timeout};
 use crate::drv::qemu_console::puts;
 use crate::intrusive_rc::IntrusiveRc;
 use crate::page_alloc::{add_memory_node, PageBox, PhyAddr, PAGE_ALLOC, PAGE_SIZE};
-use crate::{drv, page_alloc, println};
+use crate::{drv, page_alloc, print, println};
 use aarch64_cpu::registers::{ELR_EL1, SPSR_EL1, SP_EL0, TTBR0_EL1};
 use core::arch::asm;
 use core::cell::{Cell, UnsafeCell};
@@ -100,6 +100,8 @@ struct ThreadManager {
 
     futexes_locked: Cell<bool>,
     active_futexes: PageBox<FutexBlock>,
+
+    last_log_was_newline: bool,
 }
 
 #[derive(FromZeros)]
@@ -132,6 +134,8 @@ impl ThreadManager {
 
             futexes_locked: Cell::new(false),
             active_futexes: PageBox::new_zeroed(),
+
+            last_log_was_newline: true,
         }));
 
         // Initialize the init thread
@@ -226,7 +230,7 @@ impl ThreadManager {
             let thread = self.get_thread(pid as Pid + 1);
             if (thread.state == ThreadState::Running && !is_current_thread)
                 || thread.state == ThreadState::Paused
-                || thread.state == ThreadState::FutexWaiting
+                || (thread.state == ThreadState::FutexWaiting && thread.sleep_deadline == 0)
             {
                 continue;
             }
@@ -270,14 +274,25 @@ impl ThreadManager {
             let mut next_thread = self.get_current_thread();
             next_thread.load();
             next_thread.last_scheduled_time = timer_get_absolute_time_ms();
-            next_thread.state = ThreadState::Running;
             *e = next_thread.vals;
         }
 
         loop {
             let sleep_left = next_deadline.saturating_sub(timer_get_absolute_time_ms());
             if sleep_left == 0 {
-                self.get_current_thread().sleep_deadline = 0;
+                let mut current_thread = self.get_current_thread();
+                if current_thread.state == ThreadState::FutexWaiting {
+                    self.remove_futex_waiter(self.current_thread);
+                    if current_thread.sleep_deadline != 0 {
+                        e.gpr[0] = KError::TryAgain.into();
+                    } else {
+                        e.gpr[0] = 0;
+                    }
+                } else if current_thread.state == ThreadState::Running {
+                    e.gpr[0] = 0;
+                }
+                current_thread.state = ThreadState::Running;
+                current_thread.sleep_deadline = 0;
                 timer_set_timeout(SCHEDULE_INTERVAL_MS);
                 break;
             }
@@ -308,6 +323,17 @@ impl ThreadManager {
         panic!("Futex block full");
     }
 
+    unsafe fn remove_futex_waiter(&self, pid: Pid) {
+        for i in 0..FUTEX_BLOCK_SIZE {
+            let futex = self.active_futexes.futexes[i].get().as_mut_unchecked();
+            if futex.pid == pid {
+                futex.phys_addr = PhyAddr(0);
+                futex.pid = 0;
+                futex.value = 0;
+            }
+        }
+    }
+
     unsafe fn wake_futex_waiters(&self, phy_addr: PhyAddr, word_value: u32, mut wake_count: u32) {
         for i in 0..FUTEX_BLOCK_SIZE {
             if wake_count == 0 {
@@ -319,6 +345,7 @@ impl ThreadManager {
                 let mut thread = self.get_thread(futex.pid);
                 assert_eq!(thread.state, ThreadState::FutexWaiting);
                 thread.state = ThreadState::Runnable;
+                thread.sleep_deadline = 0;
                 futex.phys_addr = PhyAddr(0);
                 futex.pid = 0;
                 futex.value = 0;
@@ -438,10 +465,18 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
             todo!("Syscall::Exit not implemented")
         }
         Syscall::Log => {
+            let mgr = ThreadManager::get_global();
+
             let mut buf = [0u8; 256];
             let ptr = e.gpr[0];
             let len = e.gpr[1].min(buf.len() as u64);
             copy_from_user(ptr as usize, len as usize, &mut buf[..len as usize]);
+            if mgr.last_log_was_newline {
+                print!("[{}]", timer_get_absolute_time_ms());
+            }
+            if len > 0 {
+                mgr.last_log_was_newline = buf[len as usize - 1] == b'\n';
+            }
             puts(&buf[..len as usize]);
         }
         Syscall::PhyMap => {
@@ -565,7 +600,6 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                 thread.state = ThreadState::Sleeping;
             }
             mgr.schedule(e);
-            e.gpr[0] = 0;
         }
         Syscall::CreateThread => {
             let func = e.gpr[0];
@@ -638,6 +672,7 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
             let word = e.gpr[0];
             let op = FutexOp::from_bits(e.gpr[1]).expect("Invalid futex operation");
             let val = e.gpr[2] as u32;
+            let timeout_micros = e.gpr[3] as u64;
             let mgr = ThreadManager::get_global();
 
             if op.bits() == FutexOp::WAKE.bits() {
@@ -681,6 +716,12 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                 }
                 mgr.add_futex_waiter(phy_addr, mgr.current_thread, val);
                 thread.state = ThreadState::FutexWaiting;
+                if timeout_micros == u64::MAX {
+                    thread.sleep_deadline = 0;
+                } else {
+                    thread.sleep_deadline =
+                        timer_get_absolute_time_ms() + timeout_micros.div_ceil(1000).max(1);
+                }
 
                 assert!(mgr.futexes_locked.get());
                 mgr.futexes_locked.set(false);

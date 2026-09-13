@@ -9,17 +9,18 @@ pub(crate) mod utils;
 
 use crate::drv::gic::GicAndTimer;
 use crate::utils::{
-    control_thread, create_thread, download_more_ram, dump_hex_slice, exit, futex, get_pid,
-    mem_unmap, phy_map, sleep_sec, FmtWriteAdapter,
+    control_thread, create_thread, download_more_ram, dump_hex_slice, exit, futex_wait, futex_wake,
+    get_pid, mem_unmap, phy_map, sleep_sec, FmtWriteAdapter,
 };
 use core::fmt::Write;
 use core::panic::PanicInfo;
 use core::ptr::slice_from_raw_parts;
 use core::sync::atomic::{AtomicU32, Ordering};
+use core::time::Duration;
 use fdt_rs::base::DevTree;
 use fdt_rs::error::DevTreeError;
 use fdt_rs::prelude::{FallibleIterator, PropReader};
-use kernel_api::{ControlThreadOp, CreateThreadFlags, FutexOp, PhyMapFlags};
+use kernel_api::{ControlThreadOp, CreateThreadFlags, PhyMapFlags};
 
 static mut GLOBAL_COUNTER: u64 = 0;
 static FUTEX_WORD: AtomicU32 = AtomicU32::new(0);
@@ -134,11 +135,22 @@ fn main() {
     let futex_waiter_tid = create_thread(
         || {
             println!("Hello from futex waiter thread! My PID is {}", get_pid());
-            futex(FUTEX_WORD.as_ptr(), FutexOp::WAIT, 0).unwrap();
-            println!(
-                "Futex waiter thread woke up, value: {}",
-                FUTEX_WORD.load(Ordering::Relaxed)
-            );
+            loop {
+                let is_ready = futex_wait(
+                    FUTEX_WORD.as_ptr(),
+                    0,
+                    Duration::from_millis(1500).as_micros() as u64,
+                )
+                .is_ok();
+                println!(
+                    "Futex waiter thread woke up, is_ready: {}, value: {}",
+                    is_ready,
+                    FUTEX_WORD.load(Ordering::Relaxed)
+                );
+                if is_ready {
+                    break;
+                }
+            }
 
             loop {
                 sleep_sec(1);
@@ -164,8 +176,9 @@ fn main() {
 
         // Wake up the futex waiter thread
         if counter == 3 {
+            println!("Waking up the futex waiter thread");
             FUTEX_WORD.store(123, Ordering::Relaxed);
-            futex(FUTEX_WORD.as_ptr(), FutexOp::WAKE, u32::MAX).unwrap();
+            futex_wake(FUTEX_WORD.as_ptr(), u32::MAX).unwrap();
         }
 
         // delay_ticks(500000000);

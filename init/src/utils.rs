@@ -213,7 +213,7 @@ pub fn virt_to_phys(virt_addr: *const ()) -> Result<u64, KError> {
     }
 }
 
-pub fn futex(word: *const u32, op: FutexOp, val: u32) -> Result<(), KError> {
+pub fn futex(word: *const u32, op: FutexOp, val: u32, timeout_micros: u64) -> Result<(), KError> {
     let mut res: i64;
     unsafe {
         asm!(
@@ -221,6 +221,7 @@ pub fn futex(word: *const u32, op: FutexOp, val: u32) -> Result<(), KError> {
         in("x0") word as u64,
         in("x1") op.bits(),
         in("x2") val as u64,
+        in("x3") timeout_micros as u64,
         in("x8") Syscall::Futex as u64,
         lateout("x0") res,
         );
@@ -230,6 +231,14 @@ pub fn futex(word: *const u32, op: FutexOp, val: u32) -> Result<(), KError> {
     } else {
         Ok(())
     }
+}
+
+pub fn futex_wait(word: *const u32, val: u32, timeout_micros: u64) -> Result<(), KError> {
+    futex(word, FutexOp::WAIT, val, timeout_micros)
+}
+
+pub fn futex_wake(word: *const u32, waiters_to_wake: u32) -> Result<(), KError> {
+    futex(word, FutexOp::WAKE, waiters_to_wake, 0)
 }
 
 pub(crate) struct FmtWriteAdapter;

@@ -87,7 +87,7 @@ d00dfeed 00100000 00000040 00001db4 00000030 00000011 00000010 00000000
   - [ ] Shared memory
   - [ ] Futex
     - [x] Wait and Wake
-    - [ ] Timeouts
+    - [x] Timeouts
     - [ ] Other futex operations as needed
   - [ ] Shared ring buffer over shm & futex
   - [ ] Objects/Interfaces/Methods
