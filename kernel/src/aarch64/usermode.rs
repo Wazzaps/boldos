@@ -18,7 +18,7 @@ use kernel_api::{
     Pid, Syscall,
 };
 use tock_registers::interfaces::Writeable;
-use zerocopy::{FromZeros, IntoBytes};
+use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes};
 
 struct Thread {
     page_table: IntrusiveRc<PageTable>,
@@ -149,6 +149,20 @@ impl ThreadManager {
     unsafe fn get_global() -> &'static mut ThreadManager {
         #[allow(static_mut_refs)]
         THREAD_MANAGER.assume_init_mut()
+    }
+
+    fn next_pid(&self, pid: Pid) -> Pid {
+        assert!(pid > 0, "Thread 0 is invalid");
+        let pid_idx = pid - 1;
+        // Start from the next thread
+        for idx in (pid_idx as usize + 1)..THREAD_BLOCK_SIZE {
+            let block_idx = idx / 64;
+            let bit_idx = idx % 64;
+            if self.thread_bitmap[block_idx] & (1 << bit_idx) != 0 {
+                return (idx + 1) as Pid;
+            }
+        }
+        return 0;
     }
 
     fn get_current_thread(&self) -> ThreadLockGuard<'_> {
@@ -452,6 +466,28 @@ unsafe fn copy_from_user(user_pointer: usize, user_len: usize, target: &mut [u8]
         asm!("ldtrb {0:w}, [{1}]", out(reg) value, in(reg) user_pointer + i);
         target[i] = value as u8;
     }
+}
+
+unsafe fn copy_to_user(user_pointer: usize, user_len: usize, source: &[u8]) {
+    assert_eq!(user_len, source.len());
+    for i in 0..user_len {
+        let value = source[i] as u32;
+        asm!("strb {0:w}, [{1}]", in(reg) value, in(reg) user_pointer + i);
+    }
+}
+
+unsafe fn copy_val_from_user<T: FromBytes + IntoBytes>(user_pointer: usize) -> T {
+    let mut value: MaybeUninit<T> = MaybeUninit::uninit();
+    copy_from_user(
+        user_pointer,
+        size_of::<T>() as usize,
+        core::slice::from_raw_parts_mut(value.as_mut_ptr() as *mut u8, size_of::<T>()),
+    );
+    value.assume_init()
+}
+
+unsafe fn copy_val_to_user<T: IntoBytes + Immutable>(user_pointer: usize, value: &T) {
+    copy_to_user(user_pointer, size_of::<T>() as usize, value.as_bytes());
 }
 
 pub unsafe fn handle_syscall(e: &mut ExceptionContext) {

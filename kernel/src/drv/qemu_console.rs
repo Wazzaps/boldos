@@ -82,3 +82,18 @@ pub fn eject_lowmem() {
         UART0_ADDR = new_value as *mut u8;
     }
 }
+
+pub struct AsciiStr<'a>(pub &'a [u8]);
+
+impl<'a> core::fmt::Display for AsciiStr<'a> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for &ch in self.0 {
+            if ch.is_ascii_graphic() {
+                write!(f, "{}", ch as char)?;
+            } else {
+                write!(f, "?")?;
+            }
+        }
+        Ok(())
+    }
+}
