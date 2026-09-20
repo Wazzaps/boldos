@@ -603,7 +603,8 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
         }
         Syscall::CreateThread => {
             let func = e.gpr[0];
-            let flags = CreateThreadFlags::from_bits_truncate(e.gpr[1]);
+            let data_ptr = e.gpr[1];
+            let flags = CreateThreadFlags::from_bits_truncate(e.gpr[2]);
 
             let mgr = ThreadManager::get_global();
             let share_page_table = if flags.contains(CreateThreadFlags::SharePageTable) {
@@ -613,6 +614,7 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
             };
 
             let (pid, mut thread) = mgr.create_thread(share_page_table.clone());
+            thread.vals.gpr[0] = data_ptr;
             thread.vals.pc = func;
             if share_page_table.is_none() {
                 // TODO: Load executables in user mode

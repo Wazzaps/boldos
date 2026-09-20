@@ -1,3 +1,4 @@
+use alloc::boxed::Box;
 use core::arch::asm;
 use kernel_api::{
     kernel_device, ControlThreadOp, CreateThreadFlags, FutexOp, KError, MemMapFlags, PhyMapFlags,
@@ -148,13 +149,32 @@ pub fn delay_ticks(ticks: u64) {
     }
 }
 
-pub fn create_thread(func: fn() -> !, flags: CreateThreadFlags) -> Result<Pid, KError> {
+pub fn create_thread<F: FnOnce() -> ! + Send + 'static>(
+    func: F,
+    flags: CreateThreadFlags,
+) -> Result<Pid, KError> {
+    let data = Box::into_raw(Box::new(func)) as *mut ();
+
+    extern "C" fn trampoline<F: FnOnce() -> !>(data: *mut ()) -> ! {
+        let closure = unsafe { Box::from_raw(data as *mut F) };
+        closure()
+    }
+
+    create_thread_raw(trampoline::<F>, data, flags)
+}
+
+pub fn create_thread_raw(
+    func: extern "C" fn(*mut ()) -> !,
+    data: *mut (),
+    flags: CreateThreadFlags,
+) -> Result<Pid, KError> {
     let mut res: i64;
     unsafe {
         asm!(
         "svc #0",
         in("x0") func as u64,
-        in("x1") flags.bits(),
+        in("x1") data as u64,
+        in("x2") flags.bits(),
         in("x8") Syscall::CreateThread as u64,
         lateout("x0") res,
         );
