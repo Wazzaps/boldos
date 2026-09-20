@@ -499,7 +499,7 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
 
             if phy_addr == u64::MAX {
                 // We get to pick the address
-                let page_slice = page_alloc::alloc(len.div_ceil(PAGE_SIZE as u64) as usize);
+                let page_slice = page_alloc::alloc_zeroed(len.div_ceil(PAGE_SIZE as u64) as usize);
                 let phy_addr = PhyAddr::from_virt(page_slice.as_ptr());
                 e.gpr[0] = thread
                     .page_table
@@ -530,7 +530,7 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
             }
 
             // TODO: support fragmented physical memory
-            let page_slice = page_alloc::alloc(len.div_ceil(PAGE_SIZE as u64) as usize);
+            let page_slice = page_alloc::alloc_zeroed(len.div_ceil(PAGE_SIZE as u64) as usize);
             let phy_addr = PhyAddr::from_virt(page_slice.as_ptr());
             e.gpr[0] = thread
                 .page_table

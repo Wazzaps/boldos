@@ -448,6 +448,10 @@ pub fn alloc(page_count: usize) -> PageSlice {
     PAGE_ALLOC.lock().alloc(page_count).expect("OOM")
 }
 
+pub fn alloc_zeroed(page_count: usize) -> PageSlice {
+    PAGE_ALLOC.lock().alloc_zeroed(page_count).expect("OOM")
+}
+
 pub struct PageBox<T> {
     slice: PageSlice,
     _phantom_data: PhantomData<T>,
