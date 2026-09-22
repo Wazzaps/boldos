@@ -85,15 +85,17 @@ d00dfeed 00100000 00000040 00001db4 00000030 00000011 00000010 00000000
 - [x] Basic growable heap allocator in usermode
 - [ ] IPC
   - [ ] Shared memory
-  - [ ] Futex
+  - [x] Futex
     - [x] Wait and Wake
     - [x] Timeouts
-    - [ ] Other futex operations as needed
-  - [ ] Shared ring buffer over shm & futex
   - [ ] Ports (short messages + handles)
+    - [x] Passing byte buffers
+    - [ ] Passing handles
+    - [ ] Buffer pool
   - [ ] Regions (contiguous memory blocks)
   - [ ] MemoryMappings (address spaces for processes)
   - [ ] Waiters (stateful futex/port waiting)
+  - [ ] Shared ring buffer over regions & futex
   - [ ] Objects/Interfaces/Methods
 
 ### Milestone 3: Usable for something

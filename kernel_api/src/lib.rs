@@ -48,6 +48,10 @@ pub enum KError {
     InvalidArgument = -3,
     InvalidAddress = -4,
     TryAgain = -5,
+    PortFull = -6,
+    PortEmpty = -7,
+    MissingPermission = -8,
+    InvalidHandle = -9,
 }
 
 impl Into<u64> for KError {

@@ -269,12 +269,20 @@ pub const PAGE_ALLOC_PAGES: usize = PAGE_ALLOC_CELLS * 64;
 pub static PAGE_ALLOC: IrqMutex<BitmapPageAlloc<PAGE_ALLOC_CELLS>> =
     IrqMutex::new(BitmapPageAlloc::new(0));
 
+#[derive(FromZeros)]
 pub struct PageSlice {
     buf: *mut (),
     len: usize,
 }
 
 impl PageSlice {
+    pub fn null() -> Self {
+        Self {
+            buf: core::ptr::null_mut(),
+            len: 0,
+        }
+    }
+
     pub fn as_ptr(&self) -> *const () {
         self.buf
     }
@@ -284,10 +292,12 @@ impl PageSlice {
     }
 
     pub fn as_slice(&self) -> &[u8] {
+        assert!(!self.buf.is_null());
         unsafe { core::slice::from_raw_parts(self.as_ptr() as *const u8, self.len) }
     }
 
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        assert!(!self.buf.is_null());
         unsafe { core::slice::from_raw_parts_mut(self.as_mut_ptr() as *mut u8, self.len) }
     }
 
@@ -296,12 +306,16 @@ impl PageSlice {
     }
 
     pub fn zero(&mut self) {
+        assert!(!self.buf.is_null());
         unsafe { write_bytes(self.as_ptr() as *mut u64, 0, PAGE_SIZE / 8) };
     }
 }
 
 impl Drop for PageSlice {
     fn drop(&mut self) {
+        if self.buf.is_null() {
+            return;
+        }
         unsafe {
             // Overwrite the page with poison
             #[cfg(debug_assertions)]

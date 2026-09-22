@@ -5,7 +5,9 @@ use crate::aarch64::mmu::{tlb_flush, PageTable};
 use crate::drv::arm_gic::{timer_get_absolute_time_ms, timer_set_timeout};
 use crate::drv::qemu_console::puts;
 use crate::intrusive_rc::IntrusiveRc;
-use crate::page_alloc::{add_memory_node, PageBox, PhyAddr, PAGE_ALLOC, PAGE_SIZE};
+use crate::page_alloc::{
+    add_memory_node, alloc_zeroed, PageBox, PageSlice, PhyAddr, PAGE_ALLOC, PAGE_SIZE,
+};
 use crate::{drv, page_alloc, print, println};
 use aarch64_cpu::registers::{ELR_EL1, SPSR_EL1, SP_EL0, TTBR0_EL1};
 use core::arch::asm;
@@ -26,6 +28,8 @@ const FUTEX_BLOCK_SIZE: usize = 256;
 const HANDLE_BLOCK_SIZE: usize = 256;
 const PORT_BLOCK_SIZE: usize = 256;
 const SCHEDULE_INTERVAL_MS: u64 = 30;
+
+const PORT_MAX_MESSAGE_SIZE: usize = 64 * 1024;
 
 struct Thread {
     page_table: IntrusiveRc<PageTable>,
@@ -891,10 +895,133 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
             return;
         }
         Syscall::PortRecv => {
-            todo!("Syscall::PortRecv not implemented")
+            let port_handle_id = e.gpr[0];
+            let _flags = e.gpr[1];
+            let bytes_ptr = e.gpr[2];
+            let bytes_len = e.gpr[3] as usize;
+            let _handles_ptr = e.gpr[4];
+            let handles_len = e.gpr[5];
+            let mgr = ThreadManager::get_global();
+
+            assert!(handles_len == 0, "Handle receiving not supported yet");
+            assert!(
+                bytes_len <= PORT_MAX_MESSAGE_SIZE,
+                "message bytes buffer too large: {bytes_len}"
+            );
+
+            assert!(!mgr.ipc_locked.get());
+            mgr.ipc_locked.set(true);
+
+            let thread = mgr.get_current_thread();
+            let mut had_message = false;
+            let mut found_handle = false;
+            let mut message_len = 0;
+            for i in 0..HANDLE_BLOCK_SIZE {
+                let handle = thread.handles.items[i].get();
+                if (*handle).id == port_handle_id {
+                    match (*handle).data() {
+                        HandleDataRef::Port(port) => {
+                            assert_eq!((*handle).flags, PortHandle::FLAG_RECV);
+                            if (*port.port).buffer.as_ptr().is_null() {
+                                // No data
+                            } else {
+                                had_message = true;
+                                message_len = (*port.port).buffer_len;
+                                let copy_len = bytes_len.min(message_len);
+                                copy_to_user(
+                                    bytes_ptr as usize,
+                                    copy_len,
+                                    &(*port.port).buffer.as_slice()[..copy_len],
+                                );
+                                // Deallocate the buffer
+                                (*port.port).buffer = PageSlice::null();
+                            }
+                            found_handle = true;
+                        }
+                        _ => todo!("Receiving on non-port handle"),
+                    }
+                    break;
+                }
+            }
+
+            drop(thread);
+
+            assert!(mgr.ipc_locked.get());
+            mgr.ipc_locked.set(false);
+
+            if !found_handle {
+                e.gpr[0] = KError::InvalidHandle.into();
+            } else if !had_message {
+                e.gpr[0] = KError::PortEmpty.into();
+            } else {
+                e.gpr[0] = message_len as u64;
+            }
+            return;
         }
         Syscall::PortSend => {
-            todo!("Syscall::PortSend not implemented")
+            let port_handle_id = e.gpr[0];
+            let _flags = e.gpr[1];
+            let bytes_ptr = e.gpr[2];
+            let bytes_len = e.gpr[3] as usize;
+            let _handles_ptr = e.gpr[4];
+            let handles_len = e.gpr[5];
+            let mgr = ThreadManager::get_global();
+
+            assert!(handles_len == 0, "Handle sending not supported yet");
+            assert!(
+                bytes_len <= PORT_MAX_MESSAGE_SIZE,
+                "message bytes buffer too large: {bytes_len}"
+            );
+
+            assert!(!mgr.ipc_locked.get());
+            mgr.ipc_locked.set(true);
+
+            let thread = mgr.get_current_thread();
+            let mut is_full = false;
+            let mut found_handle = false;
+            for i in 0..HANDLE_BLOCK_SIZE {
+                let handle = thread.handles.items[i].get();
+                if (*handle).id == port_handle_id {
+                    match (*handle).data() {
+                        HandleDataRef::Port(port) => {
+                            assert!(
+                                (*handle).flags == PortHandle::FLAG_SEND
+                                    || (*handle).flags == PortHandle::FLAG_SEND_ONCE
+                            );
+                            if (*port.port).buffer.as_ptr().is_null() {
+                                // We can send data
+                                let mut buffer = alloc_zeroed(bytes_len.div_ceil(PAGE_SIZE));
+                                copy_from_user(
+                                    bytes_ptr as usize,
+                                    bytes_len,
+                                    &mut buffer.as_mut_slice()[..bytes_len],
+                                );
+                                (*port.port).buffer = buffer;
+                                (*port.port).buffer_len = bytes_len as usize;
+                            } else {
+                                is_full = true;
+                            }
+                            found_handle = true;
+                        }
+                        _ => todo!("Sending on non-port handle"),
+                    }
+                    break;
+                }
+            }
+
+            drop(thread);
+
+            assert!(mgr.ipc_locked.get());
+            mgr.ipc_locked.set(false);
+
+            if !found_handle {
+                e.gpr[0] = KError::InvalidHandle.into();
+            } else if is_full {
+                e.gpr[0] = KError::PortFull.into();
+            } else {
+                e.gpr[0] = 0;
+            }
+            return;
         }
         Syscall::RegionCreateVirtual => {
             todo!("Syscall::RegionCreateVirtual not implemented")

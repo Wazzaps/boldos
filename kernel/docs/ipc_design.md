@@ -51,7 +51,7 @@ struct {
 SYS_RESULT(void) port_send(
   bo_handle_t port,
   bo_port_send_flags_t flags,
-  void* bytes,
+  const void* bytes,
   size_t num_bytes,
   const bo_handle_t* handles,
   size_t num_handles

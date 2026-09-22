@@ -323,6 +323,21 @@ pub fn dump_hex_slice(val: &[u8]) {
     println!();
 }
 
+pub struct AsciiStr<'a>(pub &'a [u8]);
+
+impl<'a> core::fmt::Display for AsciiStr<'a> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for &ch in self.0 {
+            if ch.is_ascii_graphic() || ch == b' ' || ch == b'\t' {
+                write!(f, "{}", ch as char)?;
+            } else {
+                write!(f, "?")?;
+            }
+        }
+        Ok(())
+    }
+}
+
 #[macro_export]
 macro_rules! set_msr_const {
     ($name: ident, $value: expr) => {

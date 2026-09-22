@@ -1,4 +1,4 @@
-use crate::page_alloc::PhyAddr;
+use crate::page_alloc::{PageSlice, PhyAddr};
 use core::mem::ManuallyDrop;
 use kernel_api::Pid;
 use zerocopy::FromZeros;
@@ -78,6 +78,8 @@ pub struct Port {
     pub recv_pid: Pid,
     pub recv_handle: u64,
     pub ref_count: u32,
+    pub buffer_len: usize,
+    pub buffer: PageSlice,
 }
 
 #[derive(FromZeros, Clone)]
