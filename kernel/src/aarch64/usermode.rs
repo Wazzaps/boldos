@@ -1,4 +1,5 @@
 use crate::aarch64::exceptions::ExceptionContext;
+use crate::aarch64::ipc::{Futex, Handle, HandleDataRef, Port, PortHandle};
 use crate::aarch64::mmu;
 use crate::aarch64::mmu::{tlb_flush, PageTable};
 use crate::drv::arm_gic::{timer_get_absolute_time_ms, timer_set_timeout};
@@ -20,6 +21,12 @@ use kernel_api::{
 use tock_registers::interfaces::Writeable;
 use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes};
 
+const THREAD_BLOCK_SIZE: usize = 128;
+const FUTEX_BLOCK_SIZE: usize = 256;
+const HANDLE_BLOCK_SIZE: usize = 256;
+const PORT_BLOCK_SIZE: usize = 256;
+const SCHEDULE_INTERVAL_MS: u64 = 30;
+
 struct Thread {
     page_table: IntrusiveRc<PageTable>,
     stack: PageBox<[u64; 2048]>, // 16KiB stack
@@ -28,6 +35,7 @@ struct Thread {
     last_scheduled_time: u64,
     state: ThreadState,
     locked: bool,
+    handles: PageBox<Block<Handle, HANDLE_BLOCK_SIZE>>,
 }
 
 impl Thread {
@@ -51,6 +59,38 @@ impl Thread {
     pub fn save(&mut self, e: &mut ExceptionContext) {
         self.vals = *e;
     }
+
+    pub unsafe fn add_handle(&self, id: u64, flags: u16, data: HandleDataRef<'_>) {
+        for i in 0..HANDLE_BLOCK_SIZE {
+            let handle = self.handles.items[i].get();
+            if (*handle).id == 0 {
+                (*handle).id = id;
+                (*handle).flags = flags;
+                (*handle).set_data(data);
+                return;
+            }
+        }
+        panic!("Handle block full");
+    }
+
+    pub unsafe fn remove_handle(&self, id: u64, mgr: &ThreadManager) {
+        for i in 0..HANDLE_BLOCK_SIZE {
+            let handle = self.handles.items[i].get();
+            if (*handle).id == id {
+                (*handle).id = 0;
+                match (*handle).data() {
+                    HandleDataRef::Port(port) => {
+                        mgr.free_port(port.port);
+                    }
+                    _ => todo!("Removing other handle types not implemented"),
+                }
+                (*handle).flags = 0;
+                (*handle).handle_type = 0;
+                return;
+            }
+        }
+        panic!("Handle not found");
+    }
 }
 
 const DEFAULT_PC: u64 = 0x10000000;
@@ -73,6 +113,7 @@ impl Thread {
             last_scheduled_time: 0,
             state: ThreadState::Paused,
             locked: false,
+            handles: PageBox::new_zeroed(),
         }
     }
 }
@@ -89,9 +130,6 @@ enum ThreadState {
 static INIT_BIN: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/init.bin"));
 
 static mut THREAD_MANAGER: MaybeUninit<PageBox<ThreadManager>> = MaybeUninit::uninit();
-const THREAD_BLOCK_SIZE: usize = 128;
-const FUTEX_BLOCK_SIZE: usize = 256;
-const SCHEDULE_INTERVAL_MS: u64 = 30;
 
 struct ThreadManager {
     block: PageBox<ThreadBlock>,
@@ -100,6 +138,10 @@ struct ThreadManager {
 
     futexes_locked: Cell<bool>,
     active_futexes: PageBox<FutexBlock>,
+
+    ipc_locked: Cell<bool>,
+    ports: PageBox<Block<Port, PORT_BLOCK_SIZE>>,
+    next_handle_id: u64,
 
     last_log_was_newline: bool,
 }
@@ -134,6 +176,10 @@ impl ThreadManager {
 
             futexes_locked: Cell::new(false),
             active_futexes: PageBox::new_zeroed(),
+
+            ipc_locked: Cell::new(false),
+            ports: PageBox::new_zeroed(),
+            next_handle_id: 1,
 
             last_log_was_newline: true,
         }));
@@ -366,6 +412,38 @@ impl ThreadManager {
             }
         }
     }
+
+    unsafe fn alloc_port(&self, pid: Pid, recv_handle: u64) -> *mut Port {
+        for i in 0..PORT_BLOCK_SIZE {
+            let port = self.ports.items[i].get();
+            if (*port).recv_pid == 0 {
+                println!(
+                    " user: Allocating port for thread {} at address {:p} with recv_handle {}",
+                    pid, port, recv_handle
+                );
+                (*port).recv_pid = pid;
+                (*port).recv_handle = recv_handle;
+                // Port creation makes both recv and send handles
+                (*port).ref_count = 2;
+                return port;
+            }
+        }
+        panic!("Port block full");
+    }
+
+    unsafe fn free_port(&self, port: *mut Port) {
+        assert!((*port).ref_count > 0);
+        (*port).ref_count -= 1;
+        if (*port).ref_count == 0 {
+            println!(
+                " user: Freeing port of thread {} at address {:p}",
+                (*port).recv_pid,
+                port
+            );
+            (*port).recv_pid = 0;
+            (*port).recv_handle = 0;
+        }
+    }
 }
 
 struct ThreadLockGuard<'a> {
@@ -418,10 +496,8 @@ struct FutexBlock {
 }
 
 #[derive(FromZeros)]
-struct Futex {
-    phys_addr: PhyAddr,
-    pid: Pid,
-    value: u32,
+struct Block<T, const N: usize> {
+    items: [UnsafeCell<T>; N],
 }
 
 const DEFAULT_PAGE_FLAGS: u64 = mmu::PT_RW_EL0 | // non-privileged
@@ -770,6 +846,79 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                 e.gpr[0] = KError::InvalidArgument.into();
                 return;
             }
+        }
+        Syscall::HandleDuplicate => {
+            todo!("Syscall::HandleDuplicate not implemented")
+        }
+        Syscall::HandleClose => {
+            let handle_id = e.gpr[0];
+            let mgr = ThreadManager::get_global();
+            let thread = mgr.get_current_thread();
+            thread.remove_handle(handle_id, mgr);
+            e.gpr[0] = 0;
+            return;
+        }
+        Syscall::PortCreate => {
+            let mgr = ThreadManager::get_global();
+
+            assert!(!mgr.ipc_locked.get());
+            mgr.ipc_locked.set(true);
+
+            let rx_id = mgr.next_handle_id;
+            let tx_id = mgr.next_handle_id + 1;
+            mgr.next_handle_id += 2;
+
+            let port_ptr = mgr.alloc_port(mgr.current_thread, rx_id);
+
+            let thread = mgr.get_current_thread();
+            thread.add_handle(
+                rx_id,
+                PortHandle::FLAG_RECV,
+                HandleDataRef::Port(&PortHandle { port: port_ptr }),
+            );
+            thread.add_handle(
+                tx_id,
+                PortHandle::FLAG_SEND,
+                HandleDataRef::Port(&PortHandle { port: port_ptr }),
+            );
+            drop(thread);
+
+            assert!(mgr.ipc_locked.get());
+            mgr.ipc_locked.set(false);
+
+            e.gpr[0] = rx_id as u64;
+            e.gpr[1] = tx_id as u64;
+            return;
+        }
+        Syscall::PortRecv => {
+            todo!("Syscall::PortRecv not implemented")
+        }
+        Syscall::PortSend => {
+            todo!("Syscall::PortSend not implemented")
+        }
+        Syscall::RegionCreateVirtual => {
+            todo!("Syscall::RegionCreateVirtual not implemented")
+        }
+        Syscall::RegionCreatePhysical => {
+            todo!("Syscall::RegionCreatePhysical not implemented")
+        }
+        Syscall::RegionRead => {
+            todo!("Syscall::RegionRead not implemented")
+        }
+        Syscall::RegionWrite => {
+            todo!("Syscall::RegionWrite not implemented")
+        }
+        Syscall::MmCreate => {
+            todo!("Syscall::MmCreate not implemented")
+        }
+        Syscall::MmModify => {
+            todo!("Syscall::MmModify not implemented")
+        }
+        Syscall::WaiterCreate => {
+            todo!("Syscall::WaiterCreate not implemented")
+        }
+        Syscall::WaiterWait => {
+            todo!("Syscall::WaiterWait not implemented")
         }
     }
 }

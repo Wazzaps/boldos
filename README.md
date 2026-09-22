@@ -90,6 +90,10 @@ d00dfeed 00100000 00000040 00001db4 00000030 00000011 00000010 00000000
     - [x] Timeouts
     - [ ] Other futex operations as needed
   - [ ] Shared ring buffer over shm & futex
+  - [ ] Ports (short messages + handles)
+  - [ ] Regions (contiguous memory blocks)
+  - [ ] MemoryMappings (address spaces for processes)
+  - [ ] Waiters (stateful futex/port waiting)
   - [ ] Objects/Interfaces/Methods
 
 ### Milestone 3: Usable for something

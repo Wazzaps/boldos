@@ -5,22 +5,37 @@ use num_enum::{FromPrimitive, IntoPrimitive, TryFromPrimitive};
 
 pub type Pid = u32;
 
+// TODO: rename to NounVerb
 #[derive(TryFromPrimitive, IntoPrimitive, Eq, PartialEq, Copy, Clone, Debug)]
 #[repr(u32)]
 pub enum Syscall {
     Exit = 0,
     Log = 1,
-    PhyMap = 2,
-    MemMap = 3,
-    MemUnmap = 4,
+    PhyMap = 2,   // Replaced by region_create_physical
+    MemMap = 3,   // Replaced by region_create_virtual + mm_modify
+    MemUnmap = 4, // Replaced by mm_modify
     DownloadMoreRam = 5,
     LoadKernelDevice = 6,
-    SleepSec = 7,
+    SleepSec = 7, // Replaced by anonymous waiter_wait
     CreateThread = 8,
     GetPid = 9,
     ControlThread = 10,
     VirtToPhys = 11,
-    Futex = 12,
+    Futex = 12, // Replaced by anonymous waiter_wait
+
+    HandleDuplicate = 13,
+    HandleClose = 14,
+    PortCreate = 15,
+    PortRecv = 16,
+    PortSend = 17,
+    RegionCreateVirtual = 18,
+    RegionCreatePhysical = 19,
+    RegionRead = 20,
+    RegionWrite = 21,
+    MmCreate = 22,
+    MmModify = 23,
+    WaiterCreate = 24,
+    WaiterWait = 25,
 }
 
 #[derive(FromPrimitive, IntoPrimitive, Eq, PartialEq, Copy, Clone, Debug)]

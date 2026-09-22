@@ -2,6 +2,7 @@ use core::arch::global_asm;
 
 pub mod exceptions;
 pub mod interrupts;
+pub mod ipc;
 pub mod mmu;
 pub mod usermode;
 
