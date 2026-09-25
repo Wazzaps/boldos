@@ -15,13 +15,16 @@ $ cargo run
 alloc: Initializing early allocator
  user: Starting usermode
  user: Creating thread 1
- init: Hello from usermode!
- init: DTB mapped at 0x50200000, hexdump of first 32 bytes:
-d00dfeed 00100000 00000040 00001db4 00000030 00000011 00000010 00000000 
-
- init: Boot args: "placeholder kernel params"
- init: RAM: 0p40000000 (268435456 bytes)
- init: Extracting timer information from DTB
+[10] init: Hello from usermode!
+[15] init: DTB mapped at 0x50200000, hexdump of first 32 bytes:
+[16]d00dfeed 00100000 00000040 00001db4 00000030 00000011 00000010 00000000 
+[16]
+[17] init: Boot args: "placeholder kernel params"
+[17] init: RAM: 0p40000000 (268435456 bytes)
+[18] init: Expanding heap by 1048576 bytes
+[23] init: Mapped memory at 0x50400000
+[23] init: Heap vector: [1, 2, 3]
+[23] init: Extracting timer information from DTB
  user: LoadKernelDevice: GicAndTimer {
     gicd_base: 0x8000000,
     gicc_base: 0x8010000,
@@ -29,19 +32,35 @@ d00dfeed 00100000 00000040 00001db4 00000030 00000011 00000010 00000000
     _padding: 0x0,
 }
   drv: Initializing ARM GIC
- init: Creating thread
+[27] init: ipc_test: Starting
+ user: Allocating port for thread 1 at address 0xffffff0040141000 with recv_handle 1
+[28] init: ipc_test: Port created: Handle(1), Handle(2)
  user: Creating thread 2
- init: Thread created with ID: 2
- init: Current time: 21 ms, counter: 1
- init: Hello from thread! My PID is 2
- init: Thread Current time: 22 ms, counter: 1
- user: cpu idling for: 999ms
- init: Current time: 1023 ms, counter: 2
- init: Thread Current time: 1023 ms, counter: 2
- user: cpu idling for: 1000ms
- init: Current time: 2025 ms, counter: 3
- init: Thread Current time: 2025 ms, counter: 3
- user: cpu idling for: 1000ms
+[30] init: ipc_test: Thread created: 2
+[30] init: ipc_test: Port empty
+ user: cpu idling for: 499ms
+[530] init: ipc_test: Port empty
+ user: cpu idling for: 500ms
+[1031] init: ipc_test: Port empty
+ user: cpu idling for: 99ms
+[1131] init: ipc_test: Send went OK
+ user: cpu idling for: 399ms
+[1532] init: ipc_test: Received 15 bytes: 'Hello, world! 0' + 0 handles
+ user: cpu idling for: 500ms
+[2033] init: ipc_test: Port empty
+ user: cpu idling for: 333ms
+[2367] init: ipc_test: Send went OK
+ user: cpu idling for: 166ms
+[2533] init: ipc_test: Received 15 bytes: 'Hello, world! 1' + 0 handles
+ user: cpu idling for: 500ms
+[3034] init: ipc_test: Port empty
+ user: cpu idling for: 500ms
+[3535] init: ipc_test: Port empty
+ user: cpu idling for: 66ms
+[3601] init: ipc_test: Send went OK
+ user: cpu idling for: 433ms
+[4035] init: ipc_test: Received 15 bytes: 'Hello, world! 2' + 0 handles
+ user: cpu idling for: 500ms
 
 ```
 
@@ -88,6 +107,7 @@ d00dfeed 00100000 00000040 00001db4 00000030 00000011 00000010 00000000
   - [x] Futex
     - [x] Wait and Wake
     - [x] Timeouts
+  - [x] Shared handle tables between threads
   - [ ] Ports (short messages + handles)
     - [x] Passing byte buffers
     - [ ] Passing handles

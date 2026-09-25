@@ -16,7 +16,7 @@ pub enum Syscall {
     MemUnmap = 4, // Replaced by mm_modify
     DownloadMoreRam = 5,
     LoadKernelDevice = 6,
-    SleepSec = 7, // Replaced by anonymous waiter_wait
+    SleepMs = 7, // Replaced by anonymous waiter_wait
     CreateThread = 8,
     GetPid = 9,
     ControlThread = 10,
@@ -103,6 +103,7 @@ bitflags! {
     }
     pub struct CreateThreadFlags: u64 {
         const SharePageTable = 1 << 0;
+        const ShareHandles = 1 << 1;
     }
     pub struct FutexOp: u64 {
         const WAIT = 0;

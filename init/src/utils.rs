@@ -1,5 +1,5 @@
 use alloc::boxed::Box;
-use core::arch::asm;
+use core::{arch::asm, time::Duration};
 use kernel_api::{
     kernel_device, ControlThreadOp, CreateThreadFlags, FutexOp, KError, MemMapFlags, PhyMapFlags,
     Pid, Syscall,
@@ -163,12 +163,12 @@ pub unsafe fn load_kernel_device<T: kernel_device::KernelDeviceId + Sized>(
     }
 }
 
-pub fn sleep_sec(sec: u64) {
+pub fn sleep(duration: Duration) {
     unsafe {
         asm!(
         "svc #0",
-        in("x0") sec as u64,
-        in("x8") Syscall::SleepSec as u64,
+        in("x0") duration.as_millis() as u64,
+        in("x8") Syscall::SleepMs as u64,
         );
     }
 }

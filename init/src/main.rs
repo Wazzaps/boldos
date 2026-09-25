@@ -11,7 +11,7 @@ pub(crate) mod utils;
 use crate::drv::gic::GicAndTimer;
 use crate::utils::{
     control_thread, create_thread, download_more_ram, dump_hex_slice, exit, futex_wait, futex_wake,
-    get_pid, mem_unmap, phy_map, sleep_sec, FmtWriteAdapter,
+    get_pid, mem_unmap, phy_map, sleep, FmtWriteAdapter,
 };
 use core::fmt::Write;
 use core::panic::PanicInfo;
@@ -123,7 +123,7 @@ fn main() {
     //                 counter
     //             );
     //             // delay_ticks(500000000);
-    //             sleep_sec(1);
+    //             sleep(Duration::from_secs(1));
     //         }
     //     },
     //     CreateThreadFlags::SharePageTable,
@@ -154,7 +154,7 @@ fn main() {
     //         }
 
     //         loop {
-    //             sleep_sec(1);
+    //             sleep(Duration::from_secs(1));
     //         }
     //     },
     //     CreateThreadFlags::SharePageTable,
@@ -183,7 +183,7 @@ fn main() {
     //     }
 
     //     // delay_ticks(500000000);
-    //     sleep_sec(1);
+    //     sleep(Duration::from_secs(1));
     // }
 
     ipc_test::ipc_test();

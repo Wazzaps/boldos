@@ -43,7 +43,7 @@ pub struct Thread {
     last_scheduled_time: u64,
     state: ThreadState,
     locked: bool,
-    handles: PageBox<Block<Handle, HANDLE_BLOCK_SIZE>>,
+    handles: IntrusiveRc<Block<Handle, HANDLE_BLOCK_SIZE>>,
 }
 
 impl Thread {
@@ -62,7 +62,7 @@ impl Thread {
             last_scheduled_time: 0,
             state: ThreadState::Paused,
             locked: false,
-            handles: PageBox::new_zeroed(),
+            handles: IntrusiveRc::uninit(),
         }
     }
 
@@ -89,7 +89,7 @@ impl Thread {
 
     pub unsafe fn add_handle(&self, id: u64, flags: u16, data: HandleDataRef<'_>) {
         for i in 0..HANDLE_BLOCK_SIZE {
-            let handle = self.handles.items[i].get();
+            let handle = self.handles.as_ref().items[i].get();
             if (*handle).id == 0 {
                 (*handle).id = id;
                 (*handle).flags = flags;
@@ -102,7 +102,7 @@ impl Thread {
 
     pub unsafe fn remove_handle(&self, id: u64, mgr: &ThreadManager) {
         for i in 0..HANDLE_BLOCK_SIZE {
-            let handle = self.handles.items[i].get();
+            let handle = self.handles.as_ref().items[i].get();
             if (*handle).id == id {
                 (*handle).id = 0;
                 match (*handle).data() {
@@ -121,7 +121,7 @@ impl Thread {
 
     pub unsafe fn find_handle(&self, id: u64) -> *mut Handle {
         for i in 0..HANDLE_BLOCK_SIZE {
-            let handle = self.handles.items[i].get();
+            let handle = self.handles.as_ref().items[i].get();
             if (*handle).id == id {
                 return handle;
             }
@@ -248,7 +248,7 @@ impl ThreadManager {
         }));
 
         // Initialize the init thread
-        let (pid, mut thread) = mgr.create_thread(None);
+        let (pid, mut thread) = mgr.create_thread(None, None);
         thread.state = ThreadState::Running;
         thread.last_scheduled_time = timer_get_absolute_time_ms();
         drop(thread);
@@ -278,7 +278,11 @@ impl ThreadManager {
         self.get_thread(self.current_thread)
     }
 
-    pub fn create_thread(&mut self, share_page_table: Option<Pid>) -> (Pid, ThreadLockGuard<'_>) {
+    pub fn create_thread(
+        &mut self,
+        share_page_table: Option<Pid>,
+        share_handles: Option<Pid>,
+    ) -> (Pid, ThreadLockGuard<'_>) {
         // TODO: this currently doesn't share the page table with the parent thread
         for pid in 0..THREAD_BLOCK_SIZE {
             let block_idx = pid / 64;
@@ -316,6 +320,16 @@ impl ThreadManager {
                                 DEFAULT_PAGE_FLAGS,
                             );
                         }
+                    }
+
+                    if let Some(share_pid) = share_handles {
+                        let mut share_thread = self.get_thread(share_pid);
+                        new_thread
+                            .handles
+                            .init_pinned_sibling(&mut share_thread.handles);
+                    } else {
+                        // SAFETY: The thread will not move until it's dropped
+                        new_thread.handles.init_pinned(PageBox::new_zeroed());
                     }
 
                     new_thread

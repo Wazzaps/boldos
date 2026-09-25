@@ -1,11 +1,12 @@
-use core::arch::asm;
+use core::{arch::asm, time::Duration};
 
-use kernel_api::{KError, Syscall};
+use alloc::format;
+use kernel_api::{ControlThreadOp, CreateThreadFlags, KError, Syscall};
 use num_enum::FromPrimitive;
 
 use crate::{
     println,
-    utils::{sleep_sec, AsciiStr},
+    utils::{control_thread, create_thread, sleep, AsciiStr},
 };
 
 #[derive(Debug)]
@@ -141,23 +142,38 @@ pub fn ipc_test() -> ! {
     let (rx, tx) = port_create().expect("Failed to create port");
     println!("ipc_test: Port created: {:?}, {:?}", rx, tx);
 
-    port_send(&tx, 0, b"Hello, world!", &[]).expect("Failed to send message");
-    println!("ipc_test: First send went OK");
-
-    let second_send = port_send(&tx, 0, b"Hello, world!", &[]);
-    println!("ipc_test: Second send: {:?}", second_send);
+    let pid = create_thread(
+        move || {
+            sleep(Duration::from_millis(1100));
+            let mut i = 0u64;
+            loop {
+                match port_send(&tx, 0, format!("Hello, world! {i}").as_bytes(), &[]) {
+                    Ok(_) => println!("ipc_test: Send went OK"),
+                    Err(KError::PortFull) => println!("ipc_test: Port full"),
+                    Err(e) => panic!("ipc_test: Unexpected error: {:?}", e),
+                }
+                i += 1;
+                sleep(Duration::from_millis(1234));
+            }
+        },
+        CreateThreadFlags::ShareHandles | CreateThreadFlags::SharePageTable,
+    )
+    .expect("Failed to create thread");
+    println!("ipc_test: Thread created: {}", pid);
+    control_thread(pid, ControlThreadOp::Resume).expect("Failed to resume thread");
 
     let mut buf = [0u8; 128];
-    let (num_bytes, num_handles) =
-        port_recv(&rx, 0, &mut buf, &mut []).expect("Failed to receive message");
-    println!(
-        "ipc_test: Received {num_bytes} bytes: '{}' + {num_handles} handles",
-        AsciiStr(&buf[..num_bytes]),
-    );
-    let second_recv = port_recv(&rx, 0, &mut buf, &mut []);
-    println!("ipc_test: Second receive: {:?}", second_recv);
-
     loop {
-        sleep_sec(1);
+        match port_recv(&rx, 0, &mut buf, &mut []) {
+            Ok((num_bytes, num_handles)) => {
+                println!(
+                    "ipc_test: Received {num_bytes} bytes: '{}' + {num_handles} handles",
+                    AsciiStr(&buf[..num_bytes]),
+                );
+            }
+            Err(KError::PortEmpty) => println!("ipc_test: Port empty"),
+            Err(e) => panic!("ipc_test: Unexpected error: {:?}", e),
+        }
+        sleep(Duration::from_millis(500));
     }
 }

@@ -109,10 +109,10 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                 return;
             }
         }
-        Syscall::SleepSec => {
-            let sec = e.gpr[0];
-            let deadline: u64 = timer_get_absolute_time_ms() + sec * 1000;
-            // println!(" user: Sleeping for {} seconds", sec);
+        Syscall::SleepMs => {
+            let ms = e.gpr[0];
+            let deadline: u64 = timer_get_absolute_time_ms() + ms;
+            // println!(" user: Sleeping for {} ms", ms);
             let mgr = ThreadManager::get_global();
             mgr.get_current_thread().start_sleep(deadline);
             mgr.schedule(e);
@@ -128,8 +128,14 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
             } else {
                 None
             };
+            let share_handles = if flags.contains(CreateThreadFlags::ShareHandles) {
+                Some(mgr.current_thread)
+            } else {
+                None
+            };
 
-            let (pid, mut thread) = mgr.create_thread(share_page_table.clone());
+            let (pid, mut thread) =
+                mgr.create_thread(share_page_table.clone(), share_handles.clone());
             thread.regs.gpr[0] = data_ptr;
             thread.regs.pc = func;
             if share_page_table.is_none() {
