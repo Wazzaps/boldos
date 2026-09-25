@@ -4,7 +4,7 @@
 use crate::aarch64::interrupts;
 use crate::aarch64::mmu::eject_lowmem;
 use crate::page_alloc::PhyAddr;
-use aarch64::{mmu, usermode};
+use aarch64::mmu;
 use aarch64_cpu::registers::CurrentEL;
 use core::arch::asm;
 use core::panic::PanicInfo;
@@ -13,7 +13,10 @@ use tock_registers::interfaces::Readable;
 pub mod aarch64;
 mod drv;
 pub mod intrusive_rc;
+pub mod ipc;
 pub mod page_alloc;
+pub mod syscalls;
+pub mod threads;
 
 type InitFn = unsafe extern "C" fn() -> !;
 
@@ -43,7 +46,7 @@ pub unsafe extern "C" fn kmain() -> ! {
     println!("alloc: Initializing early allocator");
     page_alloc::init_early_heap();
     interrupts::enable();
-    usermode::start();
+    threads::start();
     println!("Sleeping forever");
     loop {
         unsafe { asm!("wfi") }

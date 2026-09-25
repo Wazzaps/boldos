@@ -1,4 +1,4 @@
-use crate::aarch64::usermode::handle_syscall;
+use crate::syscalls::handle_syscall;
 use crate::{print, println};
 use aarch64_cpu::registers::{SPSel, ESR_EL1, FAR_EL1};
 use core::arch::asm;

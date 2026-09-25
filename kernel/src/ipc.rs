@@ -3,6 +3,8 @@ use core::mem::ManuallyDrop;
 use kernel_api::Pid;
 use zerocopy::FromZeros;
 
+pub const PORT_MAX_MESSAGE_SIZE: usize = 64 * 1024;
+
 #[derive(FromZeros)]
 pub struct Futex {
     pub phys_addr: PhyAddr,

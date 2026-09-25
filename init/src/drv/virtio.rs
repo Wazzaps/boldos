@@ -29,6 +29,9 @@ pub fn virtio_experiment(dtb: &DevTree) {
                     )
                     .expect("failed to map virtio header")
                 };
+                if header.is_null() {
+                    panic!("virtio: header got mapped as null");
+                }
                 let header = unsafe {
                     NonNull::new(header.byte_offset(offset as isize) as *mut VirtIOHeader).unwrap()
                 };

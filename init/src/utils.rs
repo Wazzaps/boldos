@@ -6,6 +6,36 @@ use kernel_api::{
 };
 use num_enum::FromPrimitive;
 
+pub(crate) struct FmtWriteAdapter;
+
+impl core::fmt::Write for FmtWriteAdapter {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        unsafe { log_buf(s.as_bytes()) };
+        Ok(())
+    }
+}
+
+/// Prints the given formatted string to the UART.
+#[doc(hidden)]
+pub fn _print(args: core::fmt::Arguments) {
+    use core::fmt::Write;
+
+    let _ = FmtWriteAdapter.write_fmt(args);
+}
+
+/// Like the `print!` macro in the standard library, but prints to the UART.
+#[macro_export]
+macro_rules! print {
+    ($($arg:tt)*) => ($crate::utils::_print(format_args!($($arg)*)));
+}
+
+/// Like the `println!` macro in the standard library, but prints to the UART.
+#[macro_export]
+macro_rules! println {
+    () => ($crate::print!("\n"));
+    ($($arg:tt)*) => ($crate::print!(" init: {}\n", format_args!($($arg)*)));
+}
+
 pub unsafe fn exit(code: u32) -> ! {
     unsafe {
         asm!(
@@ -259,36 +289,6 @@ pub fn futex_wait(word: *const u32, val: u32, timeout_micros: u64) -> Result<(),
 
 pub fn futex_wake(word: *const u32, waiters_to_wake: u32) -> Result<(), KError> {
     futex(word, FutexOp::WAKE, waiters_to_wake, 0)
-}
-
-pub(crate) struct FmtWriteAdapter;
-
-impl core::fmt::Write for FmtWriteAdapter {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        unsafe { log_buf(s.as_bytes()) };
-        Ok(())
-    }
-}
-
-/// Prints the given formatted string to the UART.
-#[doc(hidden)]
-pub fn _print(args: core::fmt::Arguments) {
-    use core::fmt::Write;
-
-    let _ = FmtWriteAdapter.write_fmt(args);
-}
-
-/// Like the `print!` macro in the standard library, but prints to the UART.
-#[macro_export]
-macro_rules! print {
-    ($($arg:tt)*) => ($crate::utils::_print(format_args!($($arg)*)));
-}
-
-/// Like the `println!` macro in the standard library, but prints to the UART.
-#[macro_export]
-macro_rules! println {
-    () => ($crate::print!("\n"));
-    ($($arg:tt)*) => ($crate::print!(" init: {}\n", format_args!($($arg)*)));
 }
 
 #[allow(dead_code)]

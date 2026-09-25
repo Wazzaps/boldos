@@ -1,5 +1,5 @@
 use crate::aarch64::exceptions::ExceptionContext;
-use crate::aarch64::usermode::handle_timer_tick;
+use crate::threads::handle_timer_tick;
 use crate::{get_msr, set_msr};
 use crate::{page_alloc::PhyAddr, println};
 use core::ptr::{read_volatile, write_volatile};
