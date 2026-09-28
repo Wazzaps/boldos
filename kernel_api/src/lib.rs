@@ -2,8 +2,10 @@
 use bitflags::bitflags;
 use core::fmt::Debug;
 use num_enum::{FromPrimitive, IntoPrimitive, TryFromPrimitive};
+use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 pub type Pid = u32;
+pub type Handle = u64;
 
 // TODO: rename to NounVerb
 #[derive(TryFromPrimitive, IntoPrimitive, Eq, PartialEq, Copy, Clone, Debug)]
@@ -62,6 +64,19 @@ impl Into<u64> for KError {
     }
 }
 
+#[derive(Debug, FromBytes, IntoBytes, Immutable)]
+#[repr(C)]
+pub struct RegionArg {
+    pub region: Handle,
+    pub size: usize,
+    pub offset: usize,
+    // Specify 0 for arbitrary address
+    pub addr: usize,
+    pub flags: u32,
+    #[cfg(target_pointer_width = "64")]
+    pub _padding: u32,
+}
+
 #[derive(TryFromPrimitive, IntoPrimitive, Eq, PartialEq, Copy, Clone, Debug)]
 #[repr(u32)]
 pub enum ControlThreadOp {
@@ -110,5 +125,8 @@ bitflags! {
     pub struct FutexOp: u64 {
         const WAIT = 0;
         const WAKE = 1;
+    }
+    pub struct RegionMapFlags: u64 {
+        const ReadWrite = 1 << 0;
     }
 }

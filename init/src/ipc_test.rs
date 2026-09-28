@@ -1,7 +1,7 @@
 use core::{arch::asm, time::Duration};
 
 use alloc::format;
-use kernel_api::{ControlThreadOp, CreateThreadFlags, KError, Syscall};
+use kernel_api::{ControlThreadOp, CreateThreadFlags, KError, RegionArg, Syscall};
 use num_enum::FromPrimitive;
 
 use crate::{
@@ -250,6 +250,52 @@ pub fn region_write_full(region: &Handle, bytes: &[u8], offset: usize) -> Result
     Ok(())
 }
 
+pub fn mm_modify(mm: Option<&Handle>, regions: &mut [RegionArg]) -> Result<(), KError> {
+    let mut result: i64;
+    unsafe {
+        asm!(
+        "svc #0",
+        in("x0") mm.map(|h| h.0).unwrap_or(0),
+        in("x1") regions.as_ptr(),
+        in("x2") regions.len(),
+        in("x8") Syscall::MmModify as u64,
+        lateout("x0") result,
+        );
+    }
+    if (result as i64) < 0 {
+        Err(KError::from_primitive(result as i32))
+    } else {
+        Ok(())
+    }
+}
+
+pub fn mm_map(mm: Option<&Handle>, range: &Handle, size: usize) -> Result<*mut (), KError> {
+    let mut region_args = [RegionArg {
+        region: range.0,
+        offset: 0,
+        size: size,
+        addr: 0,
+        flags: 0,
+        #[cfg(target_pointer_width = "64")]
+        _padding: 0,
+    }];
+    mm_modify(mm, &mut region_args)?;
+    Ok(region_args[0].addr as *mut ())
+}
+
+pub fn mm_unmap_range(mm: Option<&Handle>, addr: *mut (), size: usize) -> Result<(), KError> {
+    let mut region_args = [RegionArg {
+        region: 0,
+        offset: 0,
+        size: size,
+        addr: addr as usize,
+        flags: 0,
+        #[cfg(target_pointer_width = "64")]
+        _padding: 0,
+    }];
+    mm_modify(mm, &mut region_args)
+}
+
 pub fn ipc_test() -> ! {
     println!("ipc_test: Starting");
 
@@ -304,6 +350,16 @@ pub fn ipc_test() -> ! {
     region_read_full(&region, &mut buf, 0).expect("Failed to read from region");
     println!("ipc_test: Region read: {}", AsciiStr(&buf));
 
+    let mapped_ptr = mm_map(None, &region, 8192).expect("Failed to map region");
+    println!("ipc_test: mapped region to {mapped_ptr:?}");
+    {
+        let mapped_region = unsafe { core::slice::from_raw_parts(mapped_ptr as *mut u8, 8192) };
+        println!(
+            "ipc_test: Region read via map: {}",
+            AsciiStr(&mapped_region[..12])
+        );
+    }
+    mm_unmap_range(None, mapped_ptr, 4096).expect("Failed to unmap mapped region");
     drop(region);
 
     let region = region_create_physical(0, 0x40000000, 4096).expect("Failed to create region");
@@ -315,6 +371,21 @@ pub fn ipc_test() -> ! {
     let mut buf = [0u8; 4];
     region_read_full(&region, &mut buf, 0).expect("Failed to read from region");
     println!("ipc_test: Region read: {:02x?}", buf);
+    let mapped_ptr = mm_map(None, &region, 4096).expect("Failed to map region");
+    println!("ipc_test: mapped region to {mapped_ptr:?}");
+    {
+        let mapped_region = unsafe { core::slice::from_raw_parts(mapped_ptr as *mut u8, 4096) };
+        println!(
+            "ipc_test: Region read via map: {:02x?}",
+            &mapped_region[..4]
+        );
+    }
+    mm_unmap_range(None, mapped_ptr, 4096).expect("Failed to unmap mapped region");
+    // this will crash
+    // println!(
+    //     "ipc_test: Region read via map 2: {:02x?}",
+    //     &mapped_region[..4]
+    // );
 
     drop(region);
 

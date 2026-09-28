@@ -202,6 +202,14 @@ impl Thread {
         // TODO: if within range of ram, free the corresponding PageSlice
     }
 
+    pub unsafe fn vmap(&mut self, phy_addr: PhyAddr, len: usize, flags: u64) -> usize {
+        self.page_table.as_mut().vmap(phy_addr, len, flags)
+    }
+
+    pub unsafe fn vunmap(&mut self, virt_addr: usize, len: usize) {
+        self.page_table.as_mut().vunmap(virt_addr, len);
+    }
+
     pub fn virt_to_phys(&self, virt_addr: usize) -> Option<PhyAddr> {
         self.page_table.as_ref().virt_to_phys(virt_addr)
     }

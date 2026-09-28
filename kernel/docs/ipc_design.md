@@ -97,10 +97,11 @@ typedef uint32_t bo_region_arg_flags_t;
 typedef uint32_t bo_mm_create_flags_t;
 
 struct bo_region_arg {
-  // Specify -1 for unmap and protect operations
   bo_handle_t region;
-  size_t offset;
   size_t size;
+  size_t offset;
+  // Specify 0 for arbitrary address, in which case the real address will be written back
+  size_t addr;
   bo_region_arg_flags_t flags;
 };
 

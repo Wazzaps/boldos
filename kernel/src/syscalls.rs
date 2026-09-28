@@ -1,4 +1,5 @@
 use crate::aarch64::exceptions::ExceptionContext;
+use crate::aarch64::mmu;
 use crate::drv::arm_gic::timer_get_absolute_time_ms;
 use crate::drv::qemu_console::puts;
 use crate::ipc::{Handle, HandleDataRef, PortHandle, RegionHandle, PORT_MAX_MESSAGE_SIZE};
@@ -10,7 +11,7 @@ use core::mem::MaybeUninit;
 use kernel_api::kernel_device::KernelDeviceId;
 use kernel_api::{
     kernel_device, ControlThreadOp, CreateThreadFlags, FutexOp, KError, MemMapFlags, PhyMapFlags,
-    Syscall,
+    RegionArg, RegionMapFlags, Syscall,
 };
 use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes};
 
@@ -493,7 +494,69 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
             todo!("Syscall::MmCreate not implemented")
         }
         Syscall::MmModify => {
-            todo!("Syscall::MmModify not implemented")
+            let mm_handle_id = e.gpr[0];
+            let regions_ptr = e.gpr[1];
+            let regions_len = e.gpr[2] as usize;
+            let mgr = ThreadManager::get_global();
+
+            assert_eq!(
+                mm_handle_id, 0,
+                "Only the current process's mm can be modified currently"
+            );
+
+            let mut region_arg: RegionArg;
+            for i in 0..regions_len {
+                region_arg = copy_val_from_user(regions_ptr as usize + i * size_of::<RegionArg>());
+                let flags = RegionMapFlags::from_bits_truncate(region_arg.flags as u64);
+
+                if region_arg.region == 0 {
+                    // TODO: Support a MemProtect flag to change permissions instead of unmapping
+
+                    // Unmap the memory region
+                    let mut thread = mgr.get_current_thread();
+                    assert!(
+                        region_arg.addr.is_multiple_of(PAGE_SIZE),
+                        "Unmap region arg addr must be page aligned"
+                    );
+                    assert!(
+                        region_arg.size.is_multiple_of(PAGE_SIZE),
+                        "Unmap region arg size must be page aligned"
+                    );
+                    thread.vunmap(region_arg.addr, region_arg.size);
+
+                    // TODO: Reduce region ref count per freed page
+                } else {
+                    assert_eq!(region_arg.addr, 0, "Region arg addr must be 0");
+                    // Map the memory region
+                    with_handle::<RegionHandle>(mgr, region_arg.region, |_, thread, _, region| {
+                        let region = &mut *region.region;
+                        // Ensure the thread doesn't get freed
+                        region.ref_count += (region.data.len() / PAGE_SIZE) as u64;
+                        let mut page_flags: u64 = mmu::PT_ISH | mmu::PT_MEM; // inner shareable
+
+                        if flags.contains(RegionMapFlags::ReadWrite) {
+                            page_flags |= mmu::PT_RW_EL0;
+                        } else {
+                            page_flags |= mmu::PT_RO_EL0;
+                        }
+                        let virt_addr = thread.vmap(
+                            PhyAddr::from_virt(region.data.as_ptr()),
+                            region.data.len(),
+                            page_flags,
+                        );
+                        region_arg.addr = virt_addr;
+                        0
+                    });
+                    // TODO: validate the regions before mapping anything to be "all or nothing"
+                    //  (unless it gets changed concurrently, not sure it's interesting to handle)
+                    copy_val_to_user(
+                        regions_ptr as usize + i * size_of::<RegionArg>(),
+                        &region_arg,
+                    );
+                }
+            }
+
+            e.gpr[0] = 0;
         }
         Syscall::WaiterCreate => {
             todo!("Syscall::WaiterCreate not implemented")
