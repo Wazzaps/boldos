@@ -136,44 +136,189 @@ pub fn port_recv(
     }
 }
 
+pub fn region_create_virtual(flags: u32, len: usize) -> Result<Handle, KError> {
+    let mut handle: u64;
+    unsafe {
+        asm!(
+        "svc #0",
+        in("x0") flags as u64,
+        in("x1") len as u64,
+        in("x8") Syscall::RegionCreateVirtual as u64,
+        lateout("x0") handle,
+        );
+    }
+    if (handle as i64) < 0 {
+        Err(KError::from_primitive(handle as i32))
+    } else {
+        assert_ne!(handle, 0);
+        Ok(Handle(handle))
+    }
+}
+
+pub fn region_create_physical(flags: u32, phy_addr: usize, len: usize) -> Result<Handle, KError> {
+    let mut handle: u64;
+    unsafe {
+        asm!(
+        "svc #0",
+        in("x0") flags as u64,
+        in("x1") phy_addr as u64,
+        in("x2") len as u64,
+        in("x8") Syscall::RegionCreatePhysical as u64,
+        lateout("x0") handle,
+        );
+    }
+    if (handle as i64) < 0 {
+        Err(KError::from_primitive(handle as i32))
+    } else {
+        assert_ne!(handle, 0);
+        Ok(Handle(handle))
+    }
+}
+
+pub fn region_get_size(region: &Handle) -> Result<usize, KError> {
+    let mut size: u64;
+    unsafe {
+        asm!(
+        "svc #0",
+        in("x0") region.0,
+        in("x8") Syscall::RegionGetSize as u64,
+        lateout("x0") size,
+        );
+    }
+    if (size as i64) < 0 {
+        Err(KError::from_primitive(size as i32))
+    } else {
+        Ok(size as usize)
+    }
+}
+
+pub fn region_read(region: &Handle, bytes: &mut [u8], offset: usize) -> Result<usize, KError> {
+    let mut result: u64;
+    unsafe {
+        asm!(
+        "svc #0",
+        in("x0") region.0,
+        in("x1") bytes.as_ptr(),
+        in("x2") bytes.len(),
+        in("x3") offset as u64,
+        in("x8") Syscall::RegionRead as u64,
+        lateout("x0") result,
+        );
+    }
+    if (result as i64) < 0 {
+        Err(KError::from_primitive(result as i32))
+    } else {
+        Ok(result as usize)
+    }
+}
+
+pub fn region_read_full(region: &Handle, bytes: &mut [u8], offset: usize) -> Result<(), KError> {
+    let read_bytes = region_read(region, bytes, offset)?;
+    assert!(read_bytes <= bytes.len());
+    if read_bytes < bytes.len() {
+        return Err(KError::TooSmall);
+    }
+    Ok(())
+}
+
+pub fn region_write(region: &Handle, bytes: &[u8], offset: usize) -> Result<usize, KError> {
+    let mut result: u64;
+    unsafe {
+        asm!(
+        "svc #0",
+        in("x0") region.0,
+        in("x1") bytes.as_ptr(),
+        in("x2") bytes.len(),
+        in("x3") offset as u64,
+        in("x8") Syscall::RegionWrite as u64,
+        lateout("x0") result,
+        );
+    }
+    if (result as i64) < 0 {
+        Err(KError::from_primitive(result as i32))
+    } else {
+        Ok(result as usize)
+    }
+}
+
+pub fn region_write_full(region: &Handle, bytes: &[u8], offset: usize) -> Result<(), KError> {
+    let written_bytes = region_write(region, bytes, offset)?;
+    assert!(written_bytes <= bytes.len());
+    if written_bytes < bytes.len() {
+        return Err(KError::TooSmall);
+    }
+    Ok(())
+}
+
 pub fn ipc_test() -> ! {
     println!("ipc_test: Starting");
 
-    let (rx, tx) = port_create().expect("Failed to create port");
-    println!("ipc_test: Port created: {:?}, {:?}", rx, tx);
+    // let (rx, tx) = port_create().expect("Failed to create port");
+    // println!("ipc_test: Port created: {:?}, {:?}", rx, tx);
 
-    let pid = create_thread(
-        move || {
-            sleep(Duration::from_millis(1100));
-            let mut i = 0u64;
-            loop {
-                match port_send(&tx, 0, format!("Hello, world! {i}").as_bytes(), &[]) {
-                    Ok(_) => println!("ipc_test: Send went OK"),
-                    Err(KError::PortFull) => println!("ipc_test: Port full"),
-                    Err(e) => panic!("ipc_test: Unexpected error: {:?}", e),
-                }
-                i += 1;
-                sleep(Duration::from_millis(1234));
-            }
-        },
-        CreateThreadFlags::ShareHandles | CreateThreadFlags::SharePageTable,
-    )
-    .expect("Failed to create thread");
-    println!("ipc_test: Thread created: {}", pid);
-    control_thread(pid, ControlThreadOp::Resume).expect("Failed to resume thread");
+    // let pid = create_thread(
+    //     move || {
+    //         sleep(Duration::from_millis(1100));
+    //         let mut i = 0u64;
+    //         loop {
+    //             match port_send(&tx, 0, format!("Hello, world! {i}").as_bytes(), &[]) {
+    //                 Ok(_) => println!("ipc_test: Send went OK"),
+    //                 Err(KError::PortFull) => println!("ipc_test: Port full"),
+    //                 Err(e) => panic!("ipc_test: Unexpected error: {:?}", e),
+    //             }
+    //             i += 1;
+    //             sleep(Duration::from_millis(1234));
+    //         }
+    //     },
+    //     CreateThreadFlags::ShareHandles | CreateThreadFlags::SharePageTable,
+    // )
+    // .expect("Failed to create thread");
+    // println!("ipc_test: Thread created: {}", pid);
+    // control_thread(pid, ControlThreadOp::Resume).expect("Failed to resume thread");
 
-    let mut buf = [0u8; 128];
+    // let mut buf = [0u8; 128];
+    // loop {
+    //     match port_recv(&rx, 0, &mut buf, &mut []) {
+    //         Ok((num_bytes, num_handles)) => {
+    //             println!(
+    //                 "ipc_test: Received {num_bytes} bytes: '{}' + {num_handles} handles",
+    //                 AsciiStr(&buf[..num_bytes]),
+    //             );
+    //         }
+    //         Err(KError::PortEmpty) => println!("ipc_test: Port empty"),
+    //         Err(e) => panic!("ipc_test: Unexpected error: {:?}", e),
+    //     }
+    //     sleep(Duration::from_millis(500));
+    // }
+
+    let region = region_create_virtual(0, 8192).expect("Failed to create region");
+    println!("ipc_test: Region created: {:?}", region);
+    println!(
+        "ipc_test: Region size: {:?}",
+        region_get_size(&region).expect("Failed to get region size")
+    );
+
+    region_write_full(&region, b"hello ", 0).expect("Failed to write to region");
+    region_write_full(&region, b"world", 6).expect("Failed to write to region");
+    let mut buf = [0u8; 12];
+    region_read_full(&region, &mut buf, 0).expect("Failed to read from region");
+    println!("ipc_test: Region read: {}", AsciiStr(&buf));
+
+    drop(region);
+
+    let region = region_create_physical(0, 0x40000000, 4096).expect("Failed to create region");
+    println!("ipc_test: Region created: {:?}", region);
+    println!(
+        "ipc_test: Region size: {:?}",
+        region_get_size(&region).expect("Failed to get region size")
+    );
+    let mut buf = [0u8; 4];
+    region_read_full(&region, &mut buf, 0).expect("Failed to read from region");
+    println!("ipc_test: Region read: {:02x?}", buf);
+
+    drop(region);
+
     loop {
-        match port_recv(&rx, 0, &mut buf, &mut []) {
-            Ok((num_bytes, num_handles)) => {
-                println!(
-                    "ipc_test: Received {num_bytes} bytes: '{}' + {num_handles} handles",
-                    AsciiStr(&buf[..num_bytes]),
-                );
-            }
-            Err(KError::PortEmpty) => println!("ipc_test: Port empty"),
-            Err(e) => panic!("ipc_test: Unexpected error: {:?}", e),
-        }
-        sleep(Duration::from_millis(500));
+        sleep(Duration::from_secs(9999));
     }
 }

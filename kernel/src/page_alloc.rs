@@ -269,18 +269,19 @@ pub const PAGE_ALLOC_PAGES: usize = PAGE_ALLOC_CELLS * 64;
 pub static PAGE_ALLOC: IrqMutex<BitmapPageAlloc<PAGE_ALLOC_CELLS>> =
     IrqMutex::new(BitmapPageAlloc::new(0));
 
-#[derive(FromZeros)]
+#[derive(FromZeros, Default)]
 pub struct PageSlice {
     buf: *mut (),
     len: usize,
 }
 
 impl PageSlice {
+    pub unsafe fn from_raw(buf: *mut (), len: usize) -> Self {
+        Self { buf, len }
+    }
+
     pub fn null() -> Self {
-        Self {
-            buf: core::ptr::null_mut(),
-            len: 0,
-        }
+        Self::default()
     }
 
     pub fn as_ptr(&self) -> *const () {

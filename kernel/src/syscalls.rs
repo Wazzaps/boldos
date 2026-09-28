@@ -1,9 +1,9 @@
 use crate::aarch64::exceptions::ExceptionContext;
 use crate::drv::arm_gic::timer_get_absolute_time_ms;
 use crate::drv::qemu_console::puts;
-use crate::ipc::{HandleDataRef, PortHandle, PORT_MAX_MESSAGE_SIZE};
-use crate::page_alloc::{add_memory_node, alloc_zeroed, PageSlice, PhyAddr, PAGE_SIZE};
-use crate::threads::{PhyMapResult, ThreadManager};
+use crate::ipc::{Handle, HandleDataRef, PortHandle, RegionHandle, PORT_MAX_MESSAGE_SIZE};
+use crate::page_alloc::{self, add_memory_node, alloc_zeroed, PageSlice, PhyAddr, PAGE_SIZE};
+use crate::threads::{PhyMapResult, Thread, ThreadManager};
 use crate::{drv, print, println};
 use core::arch::asm;
 use core::mem::MaybeUninit;
@@ -309,50 +309,25 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                 "message bytes buffer too large: {bytes_len}"
             );
 
-            assert!(!mgr.ipc_locked.get());
-            mgr.ipc_locked.set(true);
-
-            let thread = mgr.get_current_thread();
-            let handle = thread.find_handle(port_handle_id);
-            let mut had_message = false;
-            let mut found_handle = false;
-            let mut message_len = 0;
-            if !handle.is_null() {
-                match (*handle).data() {
-                    HandleDataRef::Port(port) => {
-                        assert_eq!((*handle).flags, PortHandle::FLAG_RECV);
-                        if (*port.port).buffer.as_ptr().is_null() {
-                            // No data
-                        } else {
-                            had_message = true;
-                            message_len = (*port.port).buffer_len;
-                            let copy_len = bytes_len.min(message_len);
-                            copy_to_user(
-                                bytes_ptr as usize,
-                                copy_len,
-                                &(*port.port).buffer.as_slice()[..copy_len],
-                            );
-                            // Deallocate the buffer
-                            (*port.port).buffer = PageSlice::null();
-                        }
-                        found_handle = true;
-                    }
-                    _ => todo!("Receiving on non-port handle"),
+            e.gpr[0] = with_handle::<PortHandle>(mgr, port_handle_id, |_, _, handle, port| {
+                assert_eq!((*handle).flags, PortHandle::FLAG_RECV);
+                if (*port.port).buffer.as_ptr().is_null() {
+                    // No data
+                    KError::PortEmpty.into()
+                } else {
+                    let message_len = (*port.port).buffer_len;
+                    let copy_len = bytes_len.min(message_len);
+                    copy_to_user(
+                        bytes_ptr as usize,
+                        copy_len,
+                        &(*port.port).buffer.as_slice()[..copy_len],
+                    );
+                    // Deallocate the buffer
+                    (*port.port).buffer = PageSlice::null();
+                    message_len as u64
                 }
-            }
+            });
 
-            drop(thread);
-
-            assert!(mgr.ipc_locked.get());
-            mgr.ipc_locked.set(false);
-
-            if !found_handle {
-                e.gpr[0] = KError::InvalidHandle.into();
-            } else if !had_message {
-                e.gpr[0] = KError::PortEmpty.into();
-            } else {
-                e.gpr[0] = message_len as u64;
-            }
             return;
         }
         Syscall::PortSend => {
@@ -370,64 +345,149 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                 "message bytes buffer too large: {bytes_len}"
             );
 
+            e.gpr[0] = with_handle::<PortHandle>(mgr, port_handle_id, |_, _, handle, port| {
+                assert!(
+                    handle.flags == PortHandle::FLAG_SEND
+                        || handle.flags == PortHandle::FLAG_SEND_ONCE
+                );
+                if (*port.port).buffer.as_ptr().is_null() {
+                    // We can send data
+                    let mut buffer = alloc_zeroed(bytes_len.div_ceil(PAGE_SIZE));
+                    copy_from_user(
+                        bytes_ptr as usize,
+                        bytes_len,
+                        &mut buffer.as_mut_slice()[..bytes_len],
+                    );
+                    (*port.port).buffer = buffer;
+                    (*port.port).buffer_len = bytes_len as usize;
+                    0
+                } else {
+                    KError::PortFull.into()
+                }
+            });
+
+            return;
+        }
+        Syscall::RegionCreateVirtual => {
+            let _flags = e.gpr[0];
+            let len = e.gpr[1];
+            let mgr = ThreadManager::get_global();
+
+            if !len.is_multiple_of(PAGE_SIZE as u64) {
+                e.gpr[0] = KError::InvalidArgument.into();
+                return;
+            }
+
             assert!(!mgr.ipc_locked.get());
             mgr.ipc_locked.set(true);
 
-            let thread = mgr.get_current_thread();
-            let handle = thread.find_handle(port_handle_id);
-            let mut is_full = false;
-            let mut found_handle = false;
-            if !handle.is_null() {
-                match (*handle).data() {
-                    HandleDataRef::Port(port) => {
-                        assert!(
-                            (*handle).flags == PortHandle::FLAG_SEND
-                                || (*handle).flags == PortHandle::FLAG_SEND_ONCE
-                        );
-                        if (*port.port).buffer.as_ptr().is_null() {
-                            // We can send data
-                            let mut buffer = alloc_zeroed(bytes_len.div_ceil(PAGE_SIZE));
-                            copy_from_user(
-                                bytes_ptr as usize,
-                                bytes_len,
-                                &mut buffer.as_mut_slice()[..bytes_len],
-                            );
-                            (*port.port).buffer = buffer;
-                            (*port.port).buffer_len = bytes_len as usize;
-                        } else {
-                            is_full = true;
-                        }
-                        found_handle = true;
-                    }
-                    _ => todo!("Sending on non-port handle"),
-                }
-            }
+            let region_id = mgr.next_handle_id;
+            mgr.next_handle_id += 1;
 
-            drop(thread);
+            // println!(" user: RegionCreateVirtual: len={len} id={region_id}");
+            let page_slice = page_alloc::alloc_zeroed((len as usize) / PAGE_SIZE);
+            let region_ptr = mgr.alloc_region(page_slice, true);
+
+            mgr.get_current_thread().add_handle(
+                region_id,
+                0,
+                HandleDataRef::Region(&RegionHandle { region: region_ptr }),
+            );
 
             assert!(mgr.ipc_locked.get());
             mgr.ipc_locked.set(false);
 
-            if !found_handle {
-                e.gpr[0] = KError::InvalidHandle.into();
-            } else if is_full {
-                e.gpr[0] = KError::PortFull.into();
-            } else {
-                e.gpr[0] = 0;
-            }
-            return;
-        }
-        Syscall::RegionCreateVirtual => {
-            todo!("Syscall::RegionCreateVirtual not implemented")
+            e.gpr[0] = region_id as u64;
         }
         Syscall::RegionCreatePhysical => {
-            todo!("Syscall::RegionCreatePhysical not implemented")
+            let _flags = e.gpr[0];
+            let phy_addr = e.gpr[1];
+            let len = e.gpr[2];
+            let mgr = ThreadManager::get_global();
+
+            if !phy_addr.is_multiple_of(PAGE_SIZE as u64) {
+                e.gpr[0] = KError::InvalidArgument.into();
+                return;
+            }
+            if !len.is_multiple_of(PAGE_SIZE as u64) {
+                e.gpr[0] = KError::InvalidArgument.into();
+                return;
+            }
+
+            assert!(!mgr.ipc_locked.get());
+            mgr.ipc_locked.set(true);
+
+            let region_id = mgr.next_handle_id;
+            mgr.next_handle_id += 1;
+
+            // println!(" user: RegionCreatePhysical: phy_addr=0x{phy_addr:x} len={len} id={region_id}");
+            let page_slice =
+                PageSlice::from_raw(PhyAddr(phy_addr as usize).virt_mut(), len as usize);
+            let region_ptr = mgr.alloc_region(page_slice, false);
+
+            mgr.get_current_thread().add_handle(
+                region_id,
+                0,
+                HandleDataRef::Region(&RegionHandle { region: region_ptr }),
+            );
+
+            assert!(mgr.ipc_locked.get());
+            mgr.ipc_locked.set(false);
+
+            e.gpr[0] = region_id as u64;
+        }
+        Syscall::RegionGetSize => {
+            let region_handle_id = e.gpr[0];
+            let mgr = ThreadManager::get_global();
+
+            e.gpr[0] = with_handle::<RegionHandle>(mgr, region_handle_id, |_, _, _, region| {
+                (*region.region).data.len() as u64
+            });
         }
         Syscall::RegionRead => {
-            todo!("Syscall::RegionRead not implemented")
+            let region_handle_id = e.gpr[0];
+            let bytes_ptr = e.gpr[1];
+            let bytes_len = e.gpr[2] as usize;
+            let region_offset = e.gpr[3] as usize;
+            let mgr = ThreadManager::get_global();
+
+            e.gpr[0] = with_handle::<RegionHandle>(mgr, region_handle_id, |_, _, _, region| {
+                let actual_size = (*region.region).data.len().saturating_sub(region_offset);
+                let read_bytes = actual_size.min(bytes_len);
+                // println!(
+                //     " user: RegionRead: read_bytes={read_bytes} ptr={:x?}",
+                //     (*region.region).data.as_ptr()
+                // );
+                copy_to_user(
+                    bytes_ptr as usize,
+                    read_bytes,
+                    &(*region.region).data.as_slice()[region_offset..region_offset + read_bytes],
+                );
+                read_bytes as u64
+            });
         }
         Syscall::RegionWrite => {
-            todo!("Syscall::RegionWrite not implemented")
+            let region_handle_id = e.gpr[0];
+            let bytes_ptr = e.gpr[1];
+            let bytes_len = e.gpr[2] as usize;
+            let region_offset = e.gpr[3] as usize;
+            let mgr = ThreadManager::get_global();
+
+            e.gpr[0] = with_handle::<RegionHandle>(mgr, region_handle_id, |_, _, _, region| {
+                let actual_size = (*region.region).data.len().saturating_sub(region_offset);
+                let written_bytes = actual_size.min(bytes_len);
+                // println!(
+                //     " user: RegionWrite: written_bytes={written_bytes} ptr={:x?}",
+                //     (*region.region).data.as_ptr()
+                // );
+                copy_from_user(
+                    bytes_ptr as usize,
+                    written_bytes,
+                    &mut (*region.region).data.as_mut_slice()
+                        [region_offset..region_offset + written_bytes],
+                );
+                written_bytes as u64
+            });
         }
         Syscall::MmCreate => {
             todo!("Syscall::MmCreate not implemented")
@@ -474,4 +534,51 @@ unsafe fn copy_val_from_user<T: FromBytes + IntoBytes>(user_pointer: usize) -> T
 
 unsafe fn copy_val_to_user<T: IntoBytes + Immutable>(user_pointer: usize, value: &T) {
     copy_to_user(user_pointer, size_of::<T>() as usize, value.as_bytes());
+}
+
+unsafe fn with_handle<H: DowncastHandle>(
+    mgr: &ThreadManager,
+    handle_id: u64,
+    f: impl FnOnce(&ThreadManager, &mut Thread, &Handle, &H) -> u64,
+) -> u64 {
+    assert!(!mgr.ipc_locked.get());
+    mgr.ipc_locked.set(true);
+
+    let mut thread = mgr.get_current_thread();
+    let handle = thread.find_handle(handle_id);
+    let mut result = KError::InvalidHandle.into();
+    if !handle.is_null() {
+        let handle = &*handle;
+        let downcasted_handle = H::downcast_handle(handle);
+        result = f(mgr, &mut thread, handle, downcasted_handle);
+    }
+
+    drop(thread);
+
+    assert!(mgr.ipc_locked.get());
+    mgr.ipc_locked.set(false);
+
+    result
+}
+
+trait DowncastHandle {
+    fn downcast_handle(handle: &Handle) -> &Self;
+}
+
+impl DowncastHandle for RegionHandle {
+    fn downcast_handle(handle: &Handle) -> &Self {
+        match handle.data() {
+            HandleDataRef::Region(region) => region,
+            _ => todo!("Expected region handle"),
+        }
+    }
+}
+
+impl DowncastHandle for PortHandle {
+    fn downcast_handle(handle: &Handle) -> &Self {
+        match handle.data() {
+            HandleDataRef::Port(port) => port,
+            _ => todo!("Expected port handle"),
+        }
+    }
 }

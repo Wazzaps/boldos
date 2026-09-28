@@ -30,12 +30,13 @@ pub enum Syscall {
     PortSend = 17,
     RegionCreateVirtual = 18,
     RegionCreatePhysical = 19,
-    RegionRead = 20,
-    RegionWrite = 21,
-    MmCreate = 22,
-    MmModify = 23,
-    WaiterCreate = 24,
-    WaiterWait = 25,
+    RegionGetSize = 20,
+    RegionRead = 21,
+    RegionWrite = 22,
+    MmCreate = 23,
+    MmModify = 24,
+    WaiterCreate = 25,
+    WaiterWait = 26,
 }
 
 #[derive(FromPrimitive, IntoPrimitive, Eq, PartialEq, Copy, Clone, Debug)]
@@ -52,6 +53,7 @@ pub enum KError {
     PortEmpty = -7,
     MissingPermission = -8,
     InvalidHandle = -9,
+    TooSmall = -10,
 }
 
 impl Into<u64> for KError {

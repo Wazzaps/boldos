@@ -95,8 +95,17 @@ impl PortHandle {
     pub const FLAG_SEND_ONCE: u16 = 2;
 }
 
+#[derive(FromZeros)]
+pub struct Region {
+    pub data: PageSlice,
+    pub owned: bool,
+    pub ref_count: u32,
+}
+
 #[derive(FromZeros, Clone)]
-pub struct RegionHandle {}
+pub struct RegionHandle {
+    pub region: *mut Region,
+}
 
 #[derive(FromZeros, Clone)]
 pub struct MmHandle {}

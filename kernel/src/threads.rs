@@ -3,8 +3,8 @@ use crate::aarch64::mmu;
 use crate::aarch64::mmu::{tlb_flush, PageTable};
 use crate::drv::arm_gic::{timer_get_absolute_time_ms, timer_set_timeout};
 use crate::intrusive_rc::IntrusiveRc;
-use crate::ipc::{Futex, Handle, HandleDataRef, Port};
-use crate::page_alloc::{self, PageBox, PhyAddr, PAGE_ALLOC, PAGE_SIZE};
+use crate::ipc::{Futex, Handle, HandleDataRef, Port, Region};
+use crate::page_alloc::{self, PageBox, PageSlice, PhyAddr, PAGE_ALLOC, PAGE_SIZE};
 use crate::println;
 use aarch64_cpu::registers::{ELR_EL1, SPSR_EL1, SP_EL0, TTBR0_EL1};
 use core::arch::asm;
@@ -21,6 +21,7 @@ const THREAD_BLOCK_SIZE: usize = 128;
 const FUTEX_BLOCK_SIZE: usize = 256;
 const HANDLE_BLOCK_SIZE: usize = 256;
 const PORT_BLOCK_SIZE: usize = 256;
+const REGION_BLOCK_SIZE: usize = 256;
 const SCHEDULE_INTERVAL_MS: u64 = 30;
 
 const DEFAULT_PC: usize = 0x10000000;
@@ -109,7 +110,10 @@ impl Thread {
                     HandleDataRef::Port(port) => {
                         mgr.free_port(port.port);
                     }
-                    _ => todo!("Removing other handle types not implemented"),
+                    HandleDataRef::Region(region) => {
+                        mgr.free_region(region.region);
+                    }
+                    _ => todo!("Removing Mms and Waiters not implemented"),
                 }
                 (*handle).flags = 0;
                 (*handle).handle_type = 0;
@@ -224,6 +228,7 @@ pub struct ThreadManager {
     // TODO: make private, use proper locks
     pub ipc_locked: Cell<bool>,
     pub ports: PageBox<Block<Port, PORT_BLOCK_SIZE>>,
+    pub regions: PageBox<Block<Region, REGION_BLOCK_SIZE>>,
     pub next_handle_id: u64,
 
     pub last_log_was_newline: bool,
@@ -242,6 +247,7 @@ impl ThreadManager {
 
             ipc_locked: Cell::new(false),
             ports: PageBox::new_zeroed(),
+            regions: PageBox::new_zeroed(),
             next_handle_id: 1,
 
             last_log_was_newline: true,
@@ -528,6 +534,32 @@ impl ThreadManager {
             );
             (*port).recv_pid = 0;
             (*port).recv_handle = 0;
+        }
+    }
+
+    pub unsafe fn alloc_region(&self, data: PageSlice, owned: bool) -> *mut Region {
+        for i in 0..REGION_BLOCK_SIZE {
+            let region = self.regions.items[i].get();
+            if (*region).ref_count == 0 {
+                (*region).data = data;
+                (*region).owned = owned;
+                (*region).ref_count = 1;
+                return region;
+            }
+        }
+        panic!("Region block full");
+    }
+
+    pub unsafe fn free_region(&self, region: *mut Region) {
+        assert!((*region).ref_count > 0);
+        (*region).ref_count -= 1;
+        if (*region).ref_count == 0 {
+            let data = core::mem::take(&mut (*region).data);
+            if (*region).owned {
+                drop(data);
+            } else {
+                forget(data);
+            }
         }
     }
 

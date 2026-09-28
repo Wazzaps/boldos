@@ -112,7 +112,7 @@ alloc: Initializing early allocator
     - [x] Passing byte buffers
     - [ ] Passing handles
     - [ ] Buffer pool
-  - [ ] Regions (contiguous memory blocks)
+  - [x] Regions (contiguous memory blocks)
   - [ ] MemoryMappings (address spaces for processes)
   - [ ] Waiters (stateful futex/port waiting)
   - [ ] Shared ring buffer over regions & futex
