@@ -338,6 +338,10 @@ impl PageTable {
             },
         }
     }
+
+    pub fn as_phy_addr(&self) -> PhyAddr {
+        PhyAddr::from_virt(self as *const PageTable)
+    }
 }
 
 impl Debug for PageTable {

@@ -299,44 +299,6 @@ pub fn mm_unmap_range(mm: Option<&Handle>, addr: *mut (), size: usize) -> Result
 pub fn ipc_test() -> ! {
     println!("ipc_test: Starting");
 
-    // let (rx, tx) = port_create().expect("Failed to create port");
-    // println!("ipc_test: Port created: {:?}, {:?}", rx, tx);
-
-    // let pid = create_thread(
-    //     move || {
-    //         sleep(Duration::from_millis(1100));
-    //         let mut i = 0u64;
-    //         loop {
-    //             match port_send(&tx, 0, format!("Hello, world! {i}").as_bytes(), &[]) {
-    //                 Ok(_) => println!("ipc_test: Send went OK"),
-    //                 Err(KError::PortFull) => println!("ipc_test: Port full"),
-    //                 Err(e) => panic!("ipc_test: Unexpected error: {:?}", e),
-    //             }
-    //             i += 1;
-    //             sleep(Duration::from_millis(1234));
-    //         }
-    //     },
-    //     CreateThreadFlags::ShareHandles | CreateThreadFlags::SharePageTable,
-    // )
-    // .expect("Failed to create thread");
-    // println!("ipc_test: Thread created: {}", pid);
-    // control_thread(pid, ControlThreadOp::Resume).expect("Failed to resume thread");
-
-    // let mut buf = [0u8; 128];
-    // loop {
-    //     match port_recv(&rx, 0, &mut buf, &mut []) {
-    //         Ok((num_bytes, num_handles)) => {
-    //             println!(
-    //                 "ipc_test: Received {num_bytes} bytes: '{}' + {num_handles} handles",
-    //                 AsciiStr(&buf[..num_bytes]),
-    //             );
-    //         }
-    //         Err(KError::PortEmpty) => println!("ipc_test: Port empty"),
-    //         Err(e) => panic!("ipc_test: Unexpected error: {:?}", e),
-    //     }
-    //     sleep(Duration::from_millis(500));
-    // }
-
     let region = region_create_virtual(0, 8192).expect("Failed to create region");
     println!("ipc_test: Region created: {:?}", region);
     println!(
@@ -389,7 +351,41 @@ pub fn ipc_test() -> ! {
 
     drop(region);
 
+    let (rx, tx) = port_create().expect("Failed to create port");
+    println!("ipc_test: Port created: {:?}, {:?}", rx, tx);
+
+    let pid = create_thread(
+        move || {
+            sleep(Duration::from_millis(1100));
+            let mut i = 0u64;
+            loop {
+                match port_send(&tx, 0, format!("Hello, world! {i}").as_bytes(), &[]) {
+                    Ok(_) => println!("ipc_test: Send went OK"),
+                    Err(KError::PortFull) => println!("ipc_test: Port full"),
+                    Err(e) => panic!("ipc_test: Unexpected error: {:?}", e),
+                }
+                i += 1;
+                sleep(Duration::from_millis(1234));
+            }
+        },
+        CreateThreadFlags::ShareHandles | CreateThreadFlags::SharePageTable,
+    )
+    .expect("Failed to create thread");
+    println!("ipc_test: Thread created: {}", pid);
+    control_thread(pid, ControlThreadOp::Resume).expect("Failed to resume thread");
+
+    let mut buf = [0u8; 128];
     loop {
-        sleep(Duration::from_secs(9999));
+        match port_recv(&rx, 0, &mut buf, &mut []) {
+            Ok((num_bytes, num_handles)) => {
+                println!(
+                    "ipc_test: Received {num_bytes} bytes: '{}' + {num_handles} handles",
+                    AsciiStr(&buf[..num_bytes]),
+                );
+            }
+            Err(KError::PortEmpty) => println!("ipc_test: Port empty"),
+            Err(e) => panic!("ipc_test: Unexpected error: {:?}", e),
+        }
+        sleep(Duration::from_millis(500));
     }
 }

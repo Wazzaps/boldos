@@ -2,7 +2,7 @@ use crate::aarch64::exceptions::ExceptionContext;
 use crate::aarch64::mmu;
 use crate::drv::arm_gic::timer_get_absolute_time_ms;
 use crate::drv::qemu_console::puts;
-use crate::ipc::{Handle, HandleDataRef, PortHandle, RegionHandle, PORT_MAX_MESSAGE_SIZE};
+use crate::ipc::{Handle, HandleData, MmRegion, PortHandle, RegionHandle, PORT_MAX_MESSAGE_SIZE};
 use crate::page_alloc::{self, add_memory_node, alloc_zeroed, PageSlice, PhyAddr, PAGE_SIZE};
 use crate::threads::{PhyMapResult, Thread, ThreadManager};
 use crate::{drv, print, println};
@@ -169,7 +169,7 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
             let mgr = ThreadManager::get_global();
             match op {
                 ControlThreadOp::Pause => {
-                    mgr.get_thread(pid).pause();
+                    mgr.get_thread_mut(pid).pause();
                     if pid == mgr.current_thread {
                         todo!("Suspended own thread, need to switch to next thread");
                     }
@@ -177,7 +177,7 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                     return;
                 }
                 ControlThreadOp::Resume => {
-                    mgr.get_thread(pid).resume();
+                    mgr.get_thread_mut(pid).resume();
                     e.gpr[0] = 0;
                     return;
                 }
@@ -210,15 +210,9 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                 };
                 println!(" user: Futex: {:#x?}", phy_addr);
 
-                assert!(!mgr.futexes_locked.get());
-                mgr.futexes_locked.set(true);
-
                 let mut word_value: u32 = 0;
                 copy_from_user(word as usize, 4, word_value.as_mut_bytes());
                 mgr.wake_futex_waiters(phy_addr, word_value, val);
-
-                assert!(mgr.futexes_locked.get());
-                mgr.futexes_locked.set(false);
             } else if op.bits() == FutexOp::WAIT.bits() {
                 // TODO: all of this is only atomic because we are single core. Use proper spinlocks.
 
@@ -229,21 +223,14 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                 };
                 println!(" user: Futex: {:#x?}", phy_addr);
 
-                assert!(!mgr.futexes_locked.get());
-                mgr.futexes_locked.set(true);
-
                 let mut word_value: u32 = 0;
                 copy_from_user(word as usize, 4, word_value.as_mut_bytes());
                 if word_value != val {
-                    mgr.futexes_locked.set(false);
                     e.gpr[0] = KError::TryAgain.into();
                     return;
                 }
                 mgr.add_futex_waiter(phy_addr, mgr.current_thread, val);
                 thread.start_futex_wait(timeout_micros);
-
-                assert!(mgr.futexes_locked.get());
-                mgr.futexes_locked.set(false);
 
                 drop(thread);
                 mgr.schedule(e);
@@ -258,38 +245,31 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
         Syscall::HandleClose => {
             let handle_id = e.gpr[0];
             let mgr = ThreadManager::get_global();
-            let thread = mgr.get_current_thread();
-            thread.remove_handle(handle_id, mgr);
+            let mut thread = mgr.get_current_thread();
+            thread.remove_handle(handle_id);
             e.gpr[0] = 0;
             return;
         }
         Syscall::PortCreate => {
             let mgr = ThreadManager::get_global();
 
-            assert!(!mgr.ipc_locked.get());
-            mgr.ipc_locked.set(true);
+            let rx_id = mgr.reserve_handle_ids(2);
+            let tx_id = rx_id + 1;
 
-            let rx_id = mgr.next_handle_id;
-            let tx_id = mgr.next_handle_id + 1;
-            mgr.next_handle_id += 2;
+            let port = mgr.alloc_port(mgr.current_thread, rx_id);
 
-            let port_ptr = mgr.alloc_port(mgr.current_thread, rx_id);
-
-            let thread = mgr.get_current_thread();
+            let mut thread = mgr.get_current_thread();
             thread.add_handle(
                 rx_id,
                 PortHandle::FLAG_RECV,
-                HandleDataRef::Port(&PortHandle { port: port_ptr }),
+                HandleData::Port(PortHandle { port: port.clone() }),
             );
             thread.add_handle(
                 tx_id,
                 PortHandle::FLAG_SEND,
-                HandleDataRef::Port(&PortHandle { port: port_ptr }),
+                HandleData::Port(PortHandle { port }),
             );
             drop(thread);
-
-            assert!(mgr.ipc_locked.get());
-            mgr.ipc_locked.set(false);
 
             e.gpr[0] = rx_id as u64;
             e.gpr[1] = tx_id as u64;
@@ -311,20 +291,21 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
             );
 
             e.gpr[0] = with_handle::<PortHandle>(mgr, port_handle_id, |_, _, handle, port| {
-                assert_eq!((*handle).flags, PortHandle::FLAG_RECV);
-                if (*port.port).buffer.as_ptr().is_null() {
+                assert_eq!(handle.flags, PortHandle::FLAG_RECV);
+                let mut port = port.port.borrow_mut();
+                if port.buffer.as_ptr().is_null() {
                     // No data
                     KError::PortEmpty.into()
                 } else {
-                    let message_len = (*port.port).buffer_len;
+                    let message_len = port.buffer_len;
                     let copy_len = bytes_len.min(message_len);
                     copy_to_user(
                         bytes_ptr as usize,
                         copy_len,
-                        &(*port.port).buffer.as_slice()[..copy_len],
+                        &port.buffer.as_slice()[..copy_len],
                     );
                     // Deallocate the buffer
-                    (*port.port).buffer = PageSlice::null();
+                    port.buffer = PageSlice::null();
                     message_len as u64
                 }
             });
@@ -351,7 +332,8 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                     handle.flags == PortHandle::FLAG_SEND
                         || handle.flags == PortHandle::FLAG_SEND_ONCE
                 );
-                if (*port.port).buffer.as_ptr().is_null() {
+                let mut port = port.port.borrow_mut();
+                if port.buffer.as_ptr().is_null() {
                     // We can send data
                     let mut buffer = alloc_zeroed(bytes_len.div_ceil(PAGE_SIZE));
                     copy_from_user(
@@ -359,8 +341,8 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                         bytes_len,
                         &mut buffer.as_mut_slice()[..bytes_len],
                     );
-                    (*port.port).buffer = buffer;
-                    (*port.port).buffer_len = bytes_len as usize;
+                    port.buffer = buffer;
+                    port.buffer_len = bytes_len as usize;
                     0
                 } else {
                     KError::PortFull.into()
@@ -379,24 +361,17 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                 return;
             }
 
-            assert!(!mgr.ipc_locked.get());
-            mgr.ipc_locked.set(true);
-
-            let region_id = mgr.next_handle_id;
-            mgr.next_handle_id += 1;
+            let region_id = mgr.reserve_handle_id();
 
             // println!(" user: RegionCreateVirtual: len={len} id={region_id}");
             let page_slice = page_alloc::alloc_zeroed((len as usize) / PAGE_SIZE);
-            let region_ptr = mgr.alloc_region(page_slice, true);
+            let region = mgr.alloc_region(page_slice, true);
 
             mgr.get_current_thread().add_handle(
                 region_id,
                 0,
-                HandleDataRef::Region(&RegionHandle { region: region_ptr }),
+                HandleData::Region(RegionHandle { region }),
             );
-
-            assert!(mgr.ipc_locked.get());
-            mgr.ipc_locked.set(false);
 
             e.gpr[0] = region_id as u64;
         }
@@ -415,25 +390,18 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                 return;
             }
 
-            assert!(!mgr.ipc_locked.get());
-            mgr.ipc_locked.set(true);
-
-            let region_id = mgr.next_handle_id;
-            mgr.next_handle_id += 1;
+            let region_id = mgr.reserve_handle_id();
 
             // println!(" user: RegionCreatePhysical: phy_addr=0x{phy_addr:x} len={len} id={region_id}");
             let page_slice =
                 PageSlice::from_raw(PhyAddr(phy_addr as usize).virt_mut(), len as usize);
-            let region_ptr = mgr.alloc_region(page_slice, false);
+            let region = mgr.alloc_region(page_slice, false);
 
             mgr.get_current_thread().add_handle(
                 region_id,
                 0,
-                HandleDataRef::Region(&RegionHandle { region: region_ptr }),
+                HandleData::Region(RegionHandle { region }),
             );
-
-            assert!(mgr.ipc_locked.get());
-            mgr.ipc_locked.set(false);
 
             e.gpr[0] = region_id as u64;
         }
@@ -442,7 +410,7 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
             let mgr = ThreadManager::get_global();
 
             e.gpr[0] = with_handle::<RegionHandle>(mgr, region_handle_id, |_, _, _, region| {
-                (*region.region).data.len() as u64
+                region.region.borrow().data.len() as u64
             });
         }
         Syscall::RegionRead => {
@@ -453,7 +421,8 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
             let mgr = ThreadManager::get_global();
 
             e.gpr[0] = with_handle::<RegionHandle>(mgr, region_handle_id, |_, _, _, region| {
-                let actual_size = (*region.region).data.len().saturating_sub(region_offset);
+                let region = region.region.borrow();
+                let actual_size = region.data.len().saturating_sub(region_offset);
                 let read_bytes = actual_size.min(bytes_len);
                 // println!(
                 //     " user: RegionRead: read_bytes={read_bytes} ptr={:x?}",
@@ -462,7 +431,7 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                 copy_to_user(
                     bytes_ptr as usize,
                     read_bytes,
-                    &(*region.region).data.as_slice()[region_offset..region_offset + read_bytes],
+                    &region.data.as_slice()[region_offset..region_offset + read_bytes],
                 );
                 read_bytes as u64
             });
@@ -475,7 +444,8 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
             let mgr = ThreadManager::get_global();
 
             e.gpr[0] = with_handle::<RegionHandle>(mgr, region_handle_id, |_, _, _, region| {
-                let actual_size = (*region.region).data.len().saturating_sub(region_offset);
+                let mut region = region.region.borrow_mut();
+                let actual_size = region.data.len().saturating_sub(region_offset);
                 let written_bytes = actual_size.min(bytes_len);
                 // println!(
                 //     " user: RegionWrite: written_bytes={written_bytes} ptr={:x?}",
@@ -484,8 +454,7 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                 copy_from_user(
                     bytes_ptr as usize,
                     written_bytes,
-                    &mut (*region.region).data.as_mut_slice()
-                        [region_offset..region_offset + written_bytes],
+                    &mut region.data.as_mut_slice()[region_offset..region_offset + written_bytes],
                 );
                 written_bytes as u64
             });
@@ -524,26 +493,30 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                     );
                     thread.vunmap(region_arg.addr, region_arg.size);
 
-                    // TODO: Reduce region ref count per freed page
+                    // TODO: Remove regions from thread.mm.regions vec
                 } else {
                     assert_eq!(region_arg.addr, 0, "Region arg addr must be 0");
                     // Map the memory region
                     with_handle::<RegionHandle>(mgr, region_arg.region, |_, thread, _, region| {
-                        let region = &mut *region.region;
-                        // Ensure the thread doesn't get freed
-                        region.ref_count += (region.data.len() / PAGE_SIZE) as u64;
                         let mut page_flags: u64 = mmu::PT_ISH | mmu::PT_MEM; // inner shareable
-
                         if flags.contains(RegionMapFlags::ReadWrite) {
                             page_flags |= mmu::PT_RW_EL0;
                         } else {
                             page_flags |= mmu::PT_RO_EL0;
                         }
+
+                        let region_val = region.region.borrow();
                         let virt_addr = thread.vmap(
-                            PhyAddr::from_virt(region.data.as_ptr()),
-                            region.data.len(),
+                            PhyAddr::from_virt(region_val.data.as_ptr()),
+                            region_val.data.len(),
                             page_flags,
                         );
+                        // Ensure the region doesn't get freed
+                        thread.add_mm_region(MmRegion {
+                            region: region.region.clone(),
+                            addr: virt_addr,
+                            size: region_val.data.len(),
+                        });
                         region_arg.addr = virt_addr;
                         0
                     });
@@ -604,9 +577,6 @@ unsafe fn with_handle<H: DowncastHandle>(
     handle_id: u64,
     f: impl FnOnce(&ThreadManager, &mut Thread, &Handle, &H) -> u64,
 ) -> u64 {
-    assert!(!mgr.ipc_locked.get());
-    mgr.ipc_locked.set(true);
-
     let mut thread = mgr.get_current_thread();
     let handle = thread.find_handle(handle_id);
     let mut result = KError::InvalidHandle.into();
@@ -618,9 +588,6 @@ unsafe fn with_handle<H: DowncastHandle>(
 
     drop(thread);
 
-    assert!(mgr.ipc_locked.get());
-    mgr.ipc_locked.set(false);
-
     result
 }
 
@@ -630,8 +597,8 @@ trait DowncastHandle {
 
 impl DowncastHandle for RegionHandle {
     fn downcast_handle(handle: &Handle) -> &Self {
-        match handle.data() {
-            HandleDataRef::Region(region) => region,
+        match &handle.data {
+            HandleData::Region(region) => region,
             _ => todo!("Expected region handle"),
         }
     }
@@ -639,8 +606,8 @@ impl DowncastHandle for RegionHandle {
 
 impl DowncastHandle for PortHandle {
     fn downcast_handle(handle: &Handle) -> &Self {
-        match handle.data() {
-            HandleDataRef::Port(port) => port,
+        match &handle.data {
+            HandleData::Port(port) => port,
             _ => todo!("Expected port handle"),
         }
     }

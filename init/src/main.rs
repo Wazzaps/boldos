@@ -9,6 +9,7 @@ mod ipc_test;
 pub(crate) mod utils;
 
 use crate::drv::gic::GicAndTimer;
+use crate::drv::qemu_fwcfg::QemuFwCfg;
 use crate::utils::{
     control_thread, create_thread, download_more_ram, dump_hex_slice, exit, futex_wait, futex_wake,
     get_pid, mem_unmap, phy_map, sleep, FmtWriteAdapter,
@@ -107,84 +108,87 @@ fn main() {
 
     // Find all devices
     let _gic_and_timer = GicAndTimer::find_and_init(&dtb).expect("Failed to parse device tree");
-    // let mut _qemu_fwcfg = QemuFwCfg::find_and_init(&dtb).expect("Failed to parse device tree");
-    // _qemu_fwcfg.dump_files();
-    // drv::virtio::virtio_experiment(&dtb);
+    let mut _qemu_fwcfg = QemuFwCfg::find_and_init(&dtb).expect("Failed to parse device tree");
+    _qemu_fwcfg.dump_files();
+    drv::virtio::virtio_experiment(&dtb);
 
-    // println!("Creating thread");
-    // let tid = create_thread(
-    //     || {
-    //         println!("Hello from thread! My PID is {}", get_pid());
-    //         loop {
-    //             let counter = unsafe { *(&raw const GLOBAL_COUNTER) };
-    //             println!(
-    //                 "Thread Current time: {} ms, counter: {}",
-    //                 GicAndTimer::current_time_ms(),
-    //                 counter
-    //             );
-    //             // delay_ticks(500000000);
-    //             sleep(Duration::from_secs(1));
-    //         }
-    //     },
-    //     CreateThreadFlags::SharePageTable,
-    // )
-    // .expect("Failed to create thread");
-    // control_thread(tid, ControlThreadOp::Resume).expect("Failed to resume thread");
-    // println!("Thread created with ID: {}", tid);
+    println!("Creating thread");
+    let tid = create_thread(
+        || {
+            println!("Hello from thread! My PID is {}", get_pid());
+            for _ in 0..6 {
+                let counter = unsafe { *(&raw const GLOBAL_COUNTER) };
+                println!(
+                    "Thread Current time: {} ms, counter: {}",
+                    GicAndTimer::current_time_ms(),
+                    counter
+                );
+                // delay_ticks(500000000);
+                sleep(Duration::from_secs(1));
+            }
+            loop {
+                sleep(Duration::from_secs(9999));
+            }
+        },
+        CreateThreadFlags::SharePageTable,
+    )
+    .expect("Failed to create thread");
+    control_thread(tid, ControlThreadOp::Resume).expect("Failed to resume thread");
+    println!("Thread created with ID: {}", tid);
 
-    // println!("Creating futex waiter thread");
-    // let futex_waiter_tid = create_thread(
-    //     || {
-    //         println!("Hello from futex waiter thread! My PID is {}", get_pid());
-    //         loop {
-    //             let is_ready = futex_wait(
-    //                 FUTEX_WORD.as_ptr(),
-    //                 0,
-    //                 Duration::from_millis(1500).as_micros() as u64,
-    //             )
-    //             .is_ok();
-    //             println!(
-    //                 "Futex waiter thread woke up, is_ready: {}, value: {}",
-    //                 is_ready,
-    //                 FUTEX_WORD.load(Ordering::Relaxed)
-    //             );
-    //             if is_ready {
-    //                 break;
-    //             }
-    //         }
+    println!("Creating futex waiter thread");
+    let futex_waiter_tid = create_thread(
+        || {
+            println!("Hello from futex waiter thread! My PID is {}", get_pid());
+            loop {
+                let is_ready = futex_wait(
+                    FUTEX_WORD.as_ptr(),
+                    0,
+                    Duration::from_millis(1500).as_micros() as u64,
+                )
+                .is_ok();
+                println!(
+                    "Futex waiter thread woke up, is_ready: {}, value: {}",
+                    is_ready,
+                    FUTEX_WORD.load(Ordering::Relaxed)
+                );
+                if is_ready {
+                    break;
+                }
+            }
 
-    //         loop {
-    //             sleep(Duration::from_secs(1));
-    //         }
-    //     },
-    //     CreateThreadFlags::SharePageTable,
-    // )
-    // .expect("Failed to create thread");
-    // control_thread(futex_waiter_tid, ControlThreadOp::Resume).expect("Failed to resume thread");
-    // println!("Futex waiter thread created with ID: {}", futex_waiter_tid);
+            loop {
+                sleep(Duration::from_secs(1));
+            }
+        },
+        CreateThreadFlags::SharePageTable,
+    )
+    .expect("Failed to create thread");
+    control_thread(futex_waiter_tid, ControlThreadOp::Resume).expect("Failed to resume thread");
+    println!("Futex waiter thread created with ID: {}", futex_waiter_tid);
 
-    // loop {
-    //     let counter = unsafe {
-    //         let counter_ptr = &raw mut GLOBAL_COUNTER;
-    //         *counter_ptr += 1;
-    //         *counter_ptr
-    //     };
-    //     println!(
-    //         "Current time: {} ms, counter: {}",
-    //         GicAndTimer::current_time_ms(),
-    //         counter
-    //     );
+    for _ in 0..5 {
+        let counter = unsafe {
+            let counter_ptr = &raw mut GLOBAL_COUNTER;
+            *counter_ptr += 1;
+            *counter_ptr
+        };
+        println!(
+            "Current time: {} ms, counter: {}",
+            GicAndTimer::current_time_ms(),
+            counter
+        );
 
-    //     // Wake up the futex waiter thread
-    //     if counter == 3 {
-    //         println!("Waking up the futex waiter thread");
-    //         FUTEX_WORD.store(123, Ordering::Relaxed);
-    //         futex_wake(FUTEX_WORD.as_ptr(), u32::MAX).unwrap();
-    //     }
+        // Wake up the futex waiter thread
+        if counter == 3 {
+            println!("Waking up the futex waiter thread");
+            FUTEX_WORD.store(123, Ordering::Relaxed);
+            futex_wake(FUTEX_WORD.as_ptr(), u32::MAX).unwrap();
+        }
 
-    //     // delay_ticks(500000000);
-    //     sleep(Duration::from_secs(1));
-    // }
+        // delay_ticks(500000000);
+        sleep(Duration::from_secs(1));
+    }
 
     ipc_test::ipc_test();
 }

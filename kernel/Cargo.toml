@@ -12,6 +12,7 @@ tock-registers = "0.9.x"
 elain = "0.3.1"
 kernel_api = { path = "../kernel_api" }
 num_enum = { version = "0.7.4", default-features = false }
+buddy_system_allocator = "0.13.0"
 
 [build-dependencies]
 walkdir = "2.5.0"

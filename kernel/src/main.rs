@@ -10,8 +10,12 @@ use core::arch::asm;
 use core::panic::PanicInfo;
 use tock_registers::interfaces::Readable;
 
+#[macro_use]
+extern crate alloc;
+
 pub mod aarch64;
 mod drv;
+pub mod heap_alloc;
 pub mod intrusive_rc;
 pub mod ipc;
 pub mod page_alloc;

@@ -1,33 +1,25 @@
 use crate::aarch64::exceptions::ExceptionContext;
 use crate::aarch64::mmu;
-use crate::aarch64::mmu::{tlb_flush, PageTable};
+use crate::aarch64::mmu::tlb_flush;
 use crate::drv::arm_gic::{timer_get_absolute_time_ms, timer_set_timeout};
-use crate::intrusive_rc::IntrusiveRc;
-use crate::ipc::{Futex, Handle, HandleDataRef, Port, Region};
+use crate::ipc::{Futex, Handle, HandleData, Mm, MmRegion, Port, Region};
 use crate::page_alloc::{self, PageBox, PageSlice, PhyAddr, PAGE_ALLOC, PAGE_SIZE};
 use crate::println;
 use aarch64_cpu::registers::{ELR_EL1, SPSR_EL1, SP_EL0, TTBR0_EL1};
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::arch::asm;
-use core::cell::{Cell, UnsafeCell};
-use core::marker::PhantomData;
+use core::cell::{RefCell, RefMut};
 use core::mem::{forget, MaybeUninit};
-use core::ops::{Deref, DerefMut};
 use core::ptr::null_mut;
 use kernel_api::{KError, MemMapFlags, PhyMapFlags, Pid};
 use tock_registers::interfaces::Writeable;
-use zerocopy::FromZeros;
 
-const THREAD_BLOCK_SIZE: usize = 128;
-const FUTEX_BLOCK_SIZE: usize = 256;
-const HANDLE_BLOCK_SIZE: usize = 256;
-const PORT_BLOCK_SIZE: usize = 256;
-const REGION_BLOCK_SIZE: usize = 256;
 const SCHEDULE_INTERVAL_MS: u64 = 30;
 
 const DEFAULT_PC: usize = 0x10000000;
 const DEFAULT_SP: usize = 0x8000000;
 const DEFAULT_STACK_SIZE: usize = 16 * 1024;
-
 const DEFAULT_PAGE_FLAGS: u64 = mmu::PT_RW_EL0 | // non-privileged
         mmu::PT_ISH | // inner shareable
         mmu::PT_MEM; // normal memory
@@ -37,50 +29,52 @@ static INIT_BIN: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/init.bin"));
 static mut THREAD_MANAGER: MaybeUninit<PageBox<ThreadManager>> = MaybeUninit::uninit();
 
 pub struct Thread {
-    page_table: IntrusiveRc<PageTable>,
+    mm: Arc<RefCell<Mm>>,
     stack: PageBox<[u64; DEFAULT_STACK_SIZE / 8]>,
     pub regs: ExceptionContext,
     sleep_deadline: u64,
     last_scheduled_time: u64,
     state: ThreadState,
-    locked: bool,
-    handles: IntrusiveRc<Block<Handle, HANDLE_BLOCK_SIZE>>,
+    handles: Arc<RefCell<Vec<Handle>>>,
 }
 
 impl Thread {
-    fn new() -> Self {
+    fn new(
+        mm: Arc<RefCell<Mm>>,
+        handles: Arc<RefCell<Vec<Handle>>>,
+        stack: PageBox<[u64; DEFAULT_STACK_SIZE / 8]>,
+        sp: usize,
+    ) -> Self {
         Self {
-            page_table: IntrusiveRc::uninit(),
-            stack: PageBox::new_zeroed(),
+            mm,
+            stack,
             regs: ExceptionContext {
                 gpr: [0; 30],
                 lr: 0,
                 pc: DEFAULT_PC as u64,
-                sp: DEFAULT_SP as u64,
+                sp: sp as u64,
                 spsr: 0x140,
             },
             sleep_deadline: 0,
             last_scheduled_time: 0,
             state: ThreadState::Paused,
-            locked: false,
-            handles: IntrusiveRc::uninit(),
+            handles,
         }
     }
 
     pub unsafe fn load(&mut self) {
-        TTBR0_EL1.set_baddr(PhyAddr::from_virt(self.page_table.as_ptr()).0 as u64);
+        TTBR0_EL1.set_baddr(self.mm.borrow().page_table.as_phy_addr().0 as u64);
         SPSR_EL1.set(self.regs.spsr);
         SP_EL0.set(self.regs.sp);
         ELR_EL1.set(self.regs.pc);
         tlb_flush();
     }
 
-    pub unsafe fn enter(&mut self) -> ! {
-        self.load();
-        // The guard that holds this lock won't be dropped, unlock it manually
-        assert!(self.locked);
-        self.locked = false;
-        // println!(" user: Entering thread {:?}", &raw const self);
+    pub unsafe fn enter(mut this: RefMut<'_, Self>) -> ! {
+        this.load();
+        println!(" user: Entering thread {:?}", &raw const *this);
+        // Ensure the borrow is dropped before abandoning this stack frame
+        drop(this);
         asm!("eret", options(noreturn))
     }
 
@@ -88,49 +82,29 @@ impl Thread {
         self.regs = *e;
     }
 
-    pub unsafe fn add_handle(&self, id: u64, flags: u16, data: HandleDataRef<'_>) {
-        for i in 0..HANDLE_BLOCK_SIZE {
-            let handle = self.handles.as_ref().items[i].get();
-            if (*handle).id == 0 {
-                (*handle).id = id;
-                (*handle).flags = flags;
-                (*handle).set_data(data);
-                return;
-            }
-        }
-        panic!("Handle block full");
+    pub unsafe fn add_handle(&mut self, id: u64, flags: u16, data: HandleData) {
+        self.handles.borrow_mut().push(Handle { id, flags, data });
     }
 
-    pub unsafe fn remove_handle(&self, id: u64, mgr: &ThreadManager) {
-        for i in 0..HANDLE_BLOCK_SIZE {
-            let handle = self.handles.as_ref().items[i].get();
-            if (*handle).id == id {
-                (*handle).id = 0;
-                match (*handle).data() {
-                    HandleDataRef::Port(port) => {
-                        mgr.free_port(port.port);
-                    }
-                    HandleDataRef::Region(region) => {
-                        mgr.free_region(region.region);
-                    }
-                    _ => todo!("Removing Mms and Waiters not implemented"),
-                }
-                (*handle).flags = 0;
-                (*handle).handle_type = 0;
-                return;
-            }
+    pub unsafe fn remove_handle(&mut self, id: u64) {
+        let mut handles = self.handles.borrow_mut();
+        if let Some(index) = handles.iter().position(|h| h.id == id) {
+            handles.swap_remove(index);
+        } else {
+            panic!("Handle not found");
         }
-        panic!("Handle not found");
     }
 
-    pub unsafe fn find_handle(&self, id: u64) -> *mut Handle {
-        for i in 0..HANDLE_BLOCK_SIZE {
-            let handle = self.handles.as_ref().items[i].get();
-            if (*handle).id == id {
-                return handle;
-            }
+    // TODO: don't use a pointer
+    pub unsafe fn find_handle(&mut self, id: u64) -> *mut Handle {
+        if let Some(handle) = self.handles.borrow_mut().iter_mut().find(|h| h.id == id) {
+            return handle as *mut Handle;
         }
         return null_mut();
+    }
+
+    pub unsafe fn add_mm_region(&mut self, mm_region: MmRegion) {
+        self.mm.borrow_mut().regions.push(mm_region);
     }
 
     pub fn start_sleep(&mut self, deadline_ms: u64) {
@@ -156,7 +130,7 @@ impl Thread {
         code_slice.as_mut_slice()[..INIT_BIN.len()].copy_from_slice(INIT_BIN);
 
         for code_page in 0..INIT_BIN.len().div_ceil(PAGE_SIZE) {
-            self.page_table.as_mut().vmap_at(
+            self.mm.borrow_mut().page_table.vmap_at(
                 DEFAULT_PC as usize + code_page * PAGE_SIZE,
                 PhyAddr::from_virt(
                     code_slice
@@ -191,27 +165,41 @@ impl Thread {
         let page_slice = page_alloc::alloc_zeroed(len.div_ceil(PAGE_SIZE));
         let phy_addr = PhyAddr::from_virt(page_slice.as_ptr());
         forget(page_slice); // Don't free the memory we just allocated
-        self.page_table
+        self.mm
+            .borrow_mut()
+            .page_table
             .as_mut()
             .vmap(phy_addr, len as usize, page_flags)
     }
 
     pub unsafe fn mem_unmap(&mut self, virt_addr: usize, len: usize) {
-        self.page_table.as_mut().vunmap(virt_addr, len);
+        self.mm
+            .borrow_mut()
+            .page_table
+            .as_mut()
+            .vunmap(virt_addr, len);
 
         // TODO: if within range of ram, free the corresponding PageSlice
     }
 
     pub unsafe fn vmap(&mut self, phy_addr: PhyAddr, len: usize, flags: u64) -> usize {
-        self.page_table.as_mut().vmap(phy_addr, len, flags)
+        self.mm
+            .borrow_mut()
+            .page_table
+            .as_mut()
+            .vmap(phy_addr, len, flags)
     }
 
     pub unsafe fn vunmap(&mut self, virt_addr: usize, len: usize) {
-        self.page_table.as_mut().vunmap(virt_addr, len);
+        self.mm
+            .borrow_mut()
+            .page_table
+            .as_mut()
+            .vunmap(virt_addr, len);
     }
 
     pub fn virt_to_phys(&self, virt_addr: usize) -> Option<PhyAddr> {
-        self.page_table.as_ref().virt_to_phys(virt_addr)
+        self.mm.borrow().page_table.as_ref().virt_to_phys(virt_addr)
     }
 }
 
@@ -225,19 +213,13 @@ enum ThreadState {
 }
 
 pub struct ThreadManager {
-    block: PageBox<Block<MaybeUninit<Thread>, THREAD_BLOCK_SIZE>>,
-    thread_bitmap: [u64; THREAD_BLOCK_SIZE / 64],
-    pub current_thread: u32,
+    threads: Vec<RefCell<MaybeUninit<Thread>>>,
+    thread_bitmap: Vec<u64>,
+    pub current_thread: Pid,
 
-    // TODO: make private, use proper locks
-    pub futexes_locked: Cell<bool>,
-    pub active_futexes: PageBox<Block<Futex, FUTEX_BLOCK_SIZE>>,
+    active_futexes: RefCell<Vec<Futex>>,
 
-    // TODO: make private, use proper locks
-    pub ipc_locked: Cell<bool>,
-    pub ports: PageBox<Block<Port, PORT_BLOCK_SIZE>>,
-    pub regions: PageBox<Block<Region, REGION_BLOCK_SIZE>>,
-    pub next_handle_id: u64,
+    next_handle_id: u64,
 
     pub last_log_was_newline: bool,
 }
@@ -246,16 +228,12 @@ impl ThreadManager {
     unsafe fn init_global() {
         #[allow(static_mut_refs)]
         let mgr = THREAD_MANAGER.write(PageBox::new(ThreadManager {
-            block: PageBox::new_zeroed(),
-            thread_bitmap: [0; THREAD_BLOCK_SIZE / 64],
+            threads: Vec::new(),
+            thread_bitmap: Vec::new(),
             current_thread: 0,
 
-            futexes_locked: Cell::new(false),
-            active_futexes: PageBox::new_zeroed(),
+            active_futexes: RefCell::new(Vec::new()),
 
-            ipc_locked: Cell::new(false),
-            ports: PageBox::new_zeroed(),
-            regions: PageBox::new_zeroed(),
             next_handle_id: 1,
 
             last_log_was_newline: true,
@@ -278,9 +256,12 @@ impl ThreadManager {
         assert!(pid > 0, "Thread 0 is invalid");
         let pid_idx = pid - 1;
         // Start from the next thread
-        for idx in (pid_idx as usize + 1)..THREAD_BLOCK_SIZE {
+        for idx in (pid_idx as usize + 1).. {
             let block_idx = idx / 64;
             let bit_idx = idx % 64;
+            if block_idx >= self.thread_bitmap.len() {
+                break;
+            }
             if self.thread_bitmap[block_idx] & (1 << bit_idx) != 0 {
                 return (idx + 1) as Pid;
             }
@@ -288,97 +269,112 @@ impl ThreadManager {
         return 0;
     }
 
-    pub fn get_current_thread(&self) -> ThreadLockGuard<'_> {
-        self.get_thread(self.current_thread)
+    pub fn get_current_thread(&self) -> ThreadMutLockGuard<'_> {
+        self.get_thread_mut(self.current_thread)
     }
 
     pub fn create_thread(
         &mut self,
         share_page_table: Option<Pid>,
         share_handles: Option<Pid>,
-    ) -> (Pid, ThreadLockGuard<'_>) {
-        // TODO: this currently doesn't share the page table with the parent thread
-        for pid in 0..THREAD_BLOCK_SIZE {
-            let block_idx = pid / 64;
-            let bit_idx = pid % 64;
+    ) -> (Pid, ThreadMutLockGuard<'_>) {
+        for pid_idx in 0.. {
+            let block_idx = pid_idx / 64;
+            let bit_idx = pid_idx % 64;
+            let pid = (pid_idx + 1) as Pid;
+            if block_idx >= self.thread_bitmap.len() {
+                self.thread_bitmap.push(0);
+            }
             if self.thread_bitmap[block_idx] & (1 << bit_idx) == 0 {
-                println!(" user: Creating thread {}", pid + 1);
+                println!(" user: Creating thread {}", pid);
 
                 let new_thread = unsafe {
-                    let mut new_thread = self.block.new_thread(pid);
+                    let stack: PageBox<[u64; DEFAULT_STACK_SIZE / 8]> = PageBox::new_zeroed();
 
-                    if let Some(share_pid) = share_page_table {
-                        let mut share_thread = self.get_thread(share_pid);
-                        new_thread
-                            .page_table
-                            .init_pinned_sibling(&mut share_thread.page_table);
+                    let (mm, sp) = if let Some(share_pid) = share_page_table {
+                        let share_thread = self.get_thread_mut(share_pid);
+                        let mm = Arc::clone(&share_thread.mm);
 
-                        let stack_base_phys = PhyAddr::from_virt(new_thread.stack.as_ptr());
-                        let stack_base_virt = new_thread.page_table.as_mut().vmap(
+                        let stack_base_phys = PhyAddr::from_virt(stack.as_ptr());
+                        let stack_base_virt = mm.borrow_mut().page_table.as_mut().vmap(
                             stack_base_phys,
                             DEFAULT_STACK_SIZE as usize,
                             DEFAULT_PAGE_FLAGS,
                         );
-                        new_thread.regs.sp = stack_base_virt as u64 + DEFAULT_STACK_SIZE as u64;
+                        let sp = stack_base_virt + DEFAULT_STACK_SIZE;
+                        (mm, sp)
                     } else {
-                        // SAFETY: The thread will not move until it's dropped
-                        new_thread.page_table.init_pinned(PageBox::new_zeroed());
-
+                        let mut mm = Mm::new();
                         for stack_page in (0..DEFAULT_STACK_SIZE).step_by(PAGE_SIZE) {
-                            let phy_addr = PhyAddr::from_virt(
-                                new_thread.stack.as_ptr().byte_offset(stack_page as isize),
-                            );
-                            new_thread.page_table.as_mut().vmap_at(
+                            let phy_addr =
+                                PhyAddr::from_virt(stack.as_ptr().byte_offset(stack_page as isize));
+                            mm.page_table.as_mut().vmap_at(
                                 DEFAULT_SP - DEFAULT_STACK_SIZE + stack_page,
                                 phy_addr,
                                 DEFAULT_PAGE_FLAGS,
                             );
                         }
-                    }
+                        (Arc::new(RefCell::new(mm)), DEFAULT_SP)
+                    };
 
-                    if let Some(share_pid) = share_handles {
-                        let mut share_thread = self.get_thread(share_pid);
-                        new_thread
-                            .handles
-                            .init_pinned_sibling(&mut share_thread.handles);
+                    let handles = if let Some(share_pid) = share_handles {
+                        let share_thread = self.get_thread_mut(share_pid);
+                        Arc::clone(&share_thread.handles)
                     } else {
-                        // SAFETY: The thread will not move until it's dropped
-                        new_thread.handles.init_pinned(PageBox::new_zeroed());
-                    }
+                        Arc::new(RefCell::new(Vec::new()))
+                    };
 
-                    new_thread
+                    Thread::new(mm, handles, stack, sp)
                 };
 
                 self.thread_bitmap[block_idx] |= 1 << bit_idx;
-                return ((pid + 1) as u32, new_thread);
+                if self.threads.len() == pid_idx {
+                    self.threads
+                        .push(RefCell::new(MaybeUninit::new(new_thread)));
+                } else {
+                    self.threads[pid_idx as usize]
+                        .borrow_mut()
+                        .write(new_thread);
+                }
+                let new_thread = self.threads[pid_idx as usize].borrow_mut();
+                let new_thread = unsafe { RefMut::map(new_thread, |t| t.assume_init_mut()) };
+                return (pid, new_thread);
             }
         }
         panic!("No free thread slots");
     }
 
-    pub fn get_thread(&self, pid: Pid) -> ThreadLockGuard<'_> {
+    pub fn get_thread_mut(&self, pid: Pid) -> ThreadMutLockGuard<'_> {
         assert!(pid > 0, "Thread 0 is invalid");
         let pid_idx = pid - 1;
         let block_idx = pid_idx / 64;
         let bit_idx = pid_idx % 64;
+        if block_idx as usize >= self.thread_bitmap.len() {
+            panic!("Thread {pid_idx} not found");
+        }
         if self.thread_bitmap[block_idx as usize] & (1 << bit_idx) == 0 {
             panic!("Thread {pid_idx} not found");
         }
-        unsafe { self.block.get_thread_unchecked(pid_idx as usize) }
+        let thread = self.threads[pid_idx as usize].borrow_mut();
+        unsafe { RefMut::map(thread, |t| t.assume_init_mut()) }
     }
 
     fn get_next_deadline(&mut self) -> (Pid, u64) {
         let mut min_deadline = u64::MAX;
         let mut min_sched_time = u64::MAX;
-        let mut min_pid = 0;
-        for pid in 0..THREAD_BLOCK_SIZE {
-            let block_idx = pid / 64;
-            let bit_idx = pid % 64;
+        let mut min_pid: Pid = 0;
+        for pid_idx in 0.. {
+            let pid = (pid_idx + 1) as Pid;
+            let block_idx = pid_idx / 64;
+            let bit_idx = pid_idx % 64;
+            if block_idx as usize >= self.thread_bitmap.len() {
+                break;
+            }
             if self.thread_bitmap[block_idx as usize] & (1 << bit_idx) == 0 {
                 continue;
             }
-            let is_current_thread = self.current_thread == (pid + 1) as u32;
-            let thread = self.get_thread(pid as Pid + 1);
+            let is_current_thread = self.current_thread == pid;
+            let thread = self.get_thread_mut(pid);
             if (thread.state == ThreadState::Running && !is_current_thread)
                 || thread.state == ThreadState::Paused
                 || (thread.state == ThreadState::FutexWaiting && thread.sleep_deadline == 0)
@@ -387,14 +383,14 @@ impl ThreadManager {
             }
             if thread.sleep_deadline < min_deadline {
                 min_deadline = thread.sleep_deadline;
-                min_pid = pid + 1;
+                min_pid = pid;
             }
             if thread.sleep_deadline == 0 && thread.last_scheduled_time < min_sched_time {
                 min_sched_time = thread.last_scheduled_time;
-                min_pid = pid + 1;
+                min_pid = pid;
             }
         }
-        (min_pid as Pid, min_deadline)
+        (min_pid, min_deadline)
     }
 
     pub unsafe fn schedule(&mut self, e: &mut ExceptionContext) {
@@ -435,10 +431,8 @@ impl ThreadManager {
                 if current_thread.state == ThreadState::FutexWaiting {
                     self.remove_futex_waiter(self.current_thread);
                     if current_thread.sleep_deadline != 0 {
-                        println!("erasing 1");
                         e.gpr[0] = KError::TryAgain.into();
                     } else {
-                        println!("erasing 2");
                         e.gpr[0] = 0;
                     }
                 }
@@ -465,27 +459,19 @@ impl ThreadManager {
         timer_set_timeout(SCHEDULE_INTERVAL_MS);
     }
 
+    // TODO: all these futex function may want to hold the futex list locked between them
     pub unsafe fn add_futex_waiter(&self, phy_addr: PhyAddr, pid: Pid, value: u32) {
-        for i in 0..FUTEX_BLOCK_SIZE {
-            let futex = self.active_futexes.items[i].get();
-            if (*futex).phys_addr.0 == 0 {
-                (*futex).phys_addr = phy_addr;
-                (*futex).pid = pid;
-                (*futex).value = value;
-                return;
-            }
-        }
-        panic!("Futex block full");
+        self.active_futexes.borrow_mut().push(Futex {
+            phy_addr,
+            pid,
+            value,
+        });
     }
 
     pub unsafe fn remove_futex_waiter(&self, pid: Pid) {
-        for i in 0..FUTEX_BLOCK_SIZE {
-            let futex = self.active_futexes.items[i].get().as_mut_unchecked();
-            if futex.pid == pid {
-                futex.phys_addr = PhyAddr(0);
-                futex.pid = 0;
-                futex.value = 0;
-            }
+        let mut active_futexes = self.active_futexes.borrow_mut();
+        if let Some(index) = active_futexes.iter().position(|f| f.pid == pid) {
+            active_futexes.swap_remove(index);
         }
     }
 
@@ -495,80 +481,56 @@ impl ThreadManager {
         word_value: u32,
         mut wake_count: u32,
     ) {
-        for i in 0..FUTEX_BLOCK_SIZE {
+        let mut active_futexes = self.active_futexes.borrow_mut();
+        let mut i = 0;
+        while i < active_futexes.len() {
+            let futex = &active_futexes[i];
             if wake_count == 0 {
-                return;
+                break;
             }
-            let futex = self.active_futexes.items[i].get().as_mut_unchecked();
-            if futex.phys_addr.0 == phy_addr.0 && futex.value != word_value {
+            if futex.phy_addr.0 == phy_addr.0 && futex.value != word_value {
                 wake_count -= 1;
-                let mut thread = self.get_thread(futex.pid);
+                let mut thread = self.get_thread_mut(futex.pid);
                 assert_eq!(thread.state, ThreadState::FutexWaiting);
                 thread.state = ThreadState::Runnable;
                 thread.sleep_deadline = 0;
-                futex.phys_addr = PhyAddr(0);
-                futex.pid = 0;
-                futex.value = 0;
-            }
-        }
-    }
 
-    pub unsafe fn alloc_port(&self, pid: Pid, recv_handle: u64) -> *mut Port {
-        for i in 0..PORT_BLOCK_SIZE {
-            let port = self.ports.items[i].get();
-            if (*port).recv_pid == 0 {
-                println!(
-                    " user: Allocating port for thread {} at address {:p} with recv_handle {}",
-                    pid, port, recv_handle
-                );
-                (*port).recv_pid = pid;
-                (*port).recv_handle = recv_handle;
-                // Port creation makes both recv and send handles
-                (*port).ref_count = 2;
-                return port;
-            }
-        }
-        panic!("Port block full");
-    }
-
-    unsafe fn free_port(&self, port: *mut Port) {
-        assert!((*port).ref_count > 0);
-        (*port).ref_count -= 1;
-        if (*port).ref_count == 0 {
-            println!(
-                " user: Freeing port of thread {} at address {:p}",
-                (*port).recv_pid,
-                port
-            );
-            (*port).recv_pid = 0;
-            (*port).recv_handle = 0;
-        }
-    }
-
-    pub unsafe fn alloc_region(&self, data: PageSlice, owned: bool) -> *mut Region {
-        for i in 0..REGION_BLOCK_SIZE {
-            let region = self.regions.items[i].get();
-            if (*region).ref_count == 0 {
-                (*region).data = data;
-                (*region).owned = owned;
-                (*region).ref_count = 1;
-                return region;
-            }
-        }
-        panic!("Region block full");
-    }
-
-    pub unsafe fn free_region(&self, region: *mut Region) {
-        assert!((*region).ref_count > 0);
-        (*region).ref_count -= 1;
-        if (*region).ref_count == 0 {
-            let data = core::mem::take(&mut (*region).data);
-            if (*region).owned {
-                drop(data);
+                active_futexes.swap_remove(i);
             } else {
-                forget(data);
+                i += 1;
             }
         }
+    }
+
+    pub unsafe fn alloc_port(&self, pid: Pid, recv_handle: u64) -> Arc<RefCell<Port>> {
+        println!(
+            " user: Allocating port for thread {} with recv_handle {}",
+            pid, recv_handle
+        );
+        Arc::new(RefCell::new(Port {
+            recv_pid: pid,
+            recv_handle,
+            buffer_len: 0,
+            buffer: PageSlice::null(),
+        }))
+    }
+
+    pub unsafe fn alloc_region(&self, data: PageSlice, owned: bool) -> Arc<RefCell<Region>> {
+        Arc::new(RefCell::new(Region { data, owned }))
+    }
+
+    /// Allocates a contiguous block of handle ids
+    /// Returns the first handle id in the block
+    /// Must allocate at least 1 handle id
+    pub fn reserve_handle_ids(&mut self, count: usize) -> u64 {
+        assert!(count > 0, "Cannot allocate 0 handle ids");
+        let res = self.next_handle_id + 1;
+        self.next_handle_id += count as u64;
+        res
+    }
+
+    pub fn reserve_handle_id(&mut self) -> u64 {
+        self.reserve_handle_ids(1)
     }
 
     pub unsafe fn thread_phy_map(
@@ -578,7 +540,7 @@ impl ThreadManager {
         len: usize,
         flags: PhyMapFlags,
     ) -> PhyMapResult {
-        let mut thread = self.get_thread(pid);
+        let thread = self.get_thread_mut(pid);
 
         let mut page_flags: u64 = mmu::PT_ISH; // inner shareable
         if flags.contains(PhyMapFlags::ReadWrite) {
@@ -598,16 +560,17 @@ impl ThreadManager {
             let phy_addr = PhyAddr::from_virt(page_slice.as_ptr());
             forget(page_slice); // Don't free the memory we just allocated
             PhyMapResult {
-                virt_addr: thread
-                    .page_table
-                    .as_mut()
-                    .vmap(phy_addr, len as usize, page_flags) as u64,
+                virt_addr: thread.mm.borrow_mut().page_table.as_mut().vmap(
+                    phy_addr,
+                    len as usize,
+                    page_flags,
+                ) as u64,
                 phy_addr: phy_addr.0 as u64,
             }
         } else {
             // Must map a specific physical address
             PhyMapResult {
-                virt_addr: thread.page_table.as_mut().vmap(
+                virt_addr: thread.mm.borrow_mut().page_table.as_mut().vmap(
                     PhyAddr(phy_addr as usize),
                     len,
                     page_flags,
@@ -618,76 +581,11 @@ impl ThreadManager {
     }
 }
 
-impl Block<MaybeUninit<Thread>, THREAD_BLOCK_SIZE> {
-    /// # Safety
-    ///
-    /// The given index must be valid and the thread must be initialized
-    unsafe fn get_thread_unchecked(&self, idx: usize) -> ThreadLockGuard<'_> {
-        let thread = self.items[idx].get().as_mut_unchecked().as_mut_ptr();
-        ThreadLockGuard::lock(thread)
-    }
-
-    unsafe fn new_thread(&self, idx: usize) -> ThreadLockGuard<'_> {
-        let thread = self.items[idx]
-            .get()
-            .as_mut_unchecked()
-            .write(Thread::new()) as *mut _;
-        ThreadLockGuard::lock(thread)
-    }
-}
-
-pub struct ThreadLockGuard<'a> {
-    thread: *mut Thread,
-    _phantom: PhantomData<&'a Thread>,
-}
-
-impl<'a> ThreadLockGuard<'a> {
-    /// # Safety
-    ///
-    /// The given thread must be valid
-    pub unsafe fn lock(thread: *mut Thread) -> Self {
-        // println!(" user: Locking thread {:?}", thread);
-        assert!(!(*thread).locked);
-        (*thread).locked = true;
-        Self {
-            thread,
-            _phantom: PhantomData,
-        }
-    }
-}
-
-impl<'a> Deref for ThreadLockGuard<'a> {
-    type Target = Thread;
-
-    fn deref(&self) -> &Self::Target {
-        unsafe { &*self.thread }
-    }
-}
-
-impl<'a> DerefMut for ThreadLockGuard<'a> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { &mut *self.thread }
-    }
-}
-
-impl<'a> Drop for ThreadLockGuard<'a> {
-    fn drop(&mut self) {
-        unsafe {
-            // println!(" user: Unlocking thread {:?}", self.thread);
-            assert!((*self.thread).locked);
-            (*self.thread).locked = false;
-        }
-    }
-}
+pub type ThreadMutLockGuard<'a> = RefMut<'a, Thread>;
 
 pub struct PhyMapResult {
     pub virt_addr: u64,
     pub phy_addr: u64,
-}
-
-#[derive(FromZeros)]
-pub struct Block<T, const N: usize> {
-    items: [UnsafeCell<T>; N],
 }
 
 pub unsafe fn handle_timer_tick(e: &mut ExceptionContext) {
@@ -700,5 +598,5 @@ pub unsafe fn start() {
     ThreadManager::init_global();
     let mut thread = ThreadManager::get_global().get_current_thread();
     thread.map_init_binary();
-    thread.enter();
+    Thread::enter(thread);
 }
