@@ -101,6 +101,7 @@ alloc: Initializing early allocator
 - [x] Spawn multiple threads
 - [x] Preemptive scheduling (Round-Robin)
 - [x] Shared memory with shared page tables (i.e. threads sharing a memory space)
+- [x] Refcounted page tables
 - [x] Basic growable heap allocator in usermode
 - [x] Basic growable heap allocator in kernelmode
 - [ ] IPC

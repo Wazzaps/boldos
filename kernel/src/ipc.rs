@@ -64,8 +64,10 @@ pub struct Mm {
 
 impl Mm {
     pub fn new() -> Self {
+        let page_table = PageBox::<PageTable>::new_zeroed();
+        page_table.as_ref().init_meta(0);
         Self {
-            page_table: PageBox::new_zeroed(),
+            page_table,
             regions: Vec::new(),
         }
     }

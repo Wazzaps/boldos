@@ -1,6 +1,8 @@
+use crate::aarch64::interrupts::IrqMutex;
 use crate::page_alloc::{PageBox, PhyAddr, PAGE_SIZE};
 use aarch64_cpu::registers::{ReadWriteable, Writeable, VBAR_EL1};
 use aarch64_cpu::registers::{MAIR_EL1, SCTLR_EL1, TCR_EL1, TTBR0_EL1, TTBR1_EL1};
+use alloc::collections::BTreeMap;
 use core::arch::asm;
 use core::fmt::{Debug, Formatter};
 use tock_registers::interfaces::Readable;
@@ -58,6 +60,7 @@ impl PageTable {
             // Allocate new page table
             // TODO: Doesn't handle oom
             let (new_table, _) = PageBox::into_raw(PageBox::<PageTable>::new_zeroed());
+            new_table.init_meta(0);
             let phy_addr = PhyAddr::from_virt(new_table);
             #[cfg(feature = "log_mmu")]
             println!(
@@ -65,12 +68,43 @@ impl PageTable {
                 phy_addr, &self.0 as *const u64 as u64, idx
             );
             self.0[idx] = phy_addr.0 as u64 | flags;
+            self.inc_refcount();
             // SAFETY: We just allocated it
             new_table
         } else {
             // Return existing page table
             let phy_addr = PhyAddr(raw as usize & 0x7FFFFFF000);
             unsafe { &mut *phy_addr.virt_mut() }
+        }
+    }
+
+    pub fn init_meta(&self, refcount: u16) {
+        let mut pt_meta = PT_META.lock();
+        let self_addr = self.as_phy_addr();
+        pt_meta.insert(self_addr, PageTableMeta { refcount });
+    }
+
+    pub fn inc_refcount(&self) {
+        let mut pt_meta = PT_META.lock();
+        let self_addr = self.as_phy_addr();
+        let meta = pt_meta
+            .get_mut(&self_addr)
+            .expect("Page table not found in PT_META");
+        meta.refcount += 1;
+    }
+
+    pub fn dec_refcount(&self) -> bool {
+        let mut pt_meta = PT_META.lock();
+        let self_addr = self.as_phy_addr();
+        let meta = pt_meta
+            .get_mut(&self_addr)
+            .expect("Page table not found in PT_META");
+        meta.refcount -= 1;
+        if meta.refcount == 0 {
+            pt_meta.remove(&self_addr);
+            true
+        } else {
+            false
         }
     }
 
@@ -104,6 +138,7 @@ impl PageTable {
             paddr.0
         );
         *entry = paddr.0 as u64 | COMMON_FLAGS | attrs;
+        l3.inc_refcount();
 
         // TODO: unsafe { asm!("tlbi VAAE1, {}", in(reg) (vaddr as u64) >> 12) };
         tlb_flush();
@@ -115,23 +150,66 @@ impl PageTable {
         assert_eq!(PAGE_SIZE, 4096); // TODO
         assert!(vaddr < 0x8000000000);
         assert_eq!(vaddr % PAGE_SIZE, 0);
+        let mut l1_to_free = None;
         match self.get_mut(vaddr >> 39) {
             PageGetMutResult::Free => return,
-            PageGetMutResult::PageTable(l1) => match l1.get_mut((vaddr >> 30) % 512) {
-                PageGetMutResult::Free => return,
-                PageGetMutResult::PageTable(l2) => match l2.get_mut((vaddr >> 21) % 512) {
+            PageGetMutResult::PageTable(l1) => {
+                let mut l2_to_free = None;
+                match l1.get_mut((vaddr >> 30) % 512) {
                     PageGetMutResult::Free => return,
-                    PageGetMutResult::PageTable(l3) => {
-                        l3.0[(vaddr >> 12) % 512] = 0;
-                        // TODO: unsafe { asm!("tlbi VAAE1, {}", in(reg) (vaddr as u64) >> 12) };
-                        tlb_flush();
-                        // TODO: l1-l2 tables are leaked
+                    PageGetMutResult::PageTable(l2) => {
+                        let mut l3_to_free = None;
+                        match l2.get_mut((vaddr >> 21) % 512) {
+                            PageGetMutResult::Free => return,
+                            PageGetMutResult::PageTable(l3) => {
+                                l3.0[(vaddr >> 12) % 512] = 0;
+                                // TODO: unsafe { asm!("tlbi VAAE1, {}", in(reg) (vaddr as u64) >> 12) };
+                                tlb_flush();
+                                if l3.dec_refcount() {
+                                    #[cfg(feature = "log_mmu")]
+                                    println!("  mmu: Unmapping L3 table at {:?}", l3.as_phy_addr());
+                                    l3_to_free = Some(l3 as *mut PageTable);
+                                }
+                            }
+                            PageGetMutResult::Block => {
+                                todo!("Splitting L2 blocks is not implemented")
+                            }
+                        }
+                        if let Some(l3_to_free) = l3_to_free {
+                            l2.0[(vaddr >> 21) % 512] = 0;
+                            unsafe {
+                                drop(PageBox::from_raw(l3_to_free, PAGE_SIZE));
+                            }
+                            if l2.dec_refcount() {
+                                #[cfg(feature = "log_mmu")]
+                                println!("  mmu: Unmapping L2 table at {:?}", l2.as_phy_addr());
+                                l2_to_free = Some(l2 as *mut PageTable);
+                            }
+                        }
                     }
-                    PageGetMutResult::Block => todo!("Splitting L2 blocks is not implemented"),
-                },
-                PageGetMutResult::Block => todo!("Splitting L1 blocks is not implemented"),
-            },
+                    PageGetMutResult::Block => todo!("Splitting L1 blocks is not implemented"),
+                }
+
+                if let Some(l2_to_free) = l2_to_free {
+                    l1.0[(vaddr >> 30) % 512] = 0;
+                    unsafe {
+                        drop(PageBox::from_raw(l2_to_free, PAGE_SIZE));
+                    }
+                    if l1.dec_refcount() {
+                        #[cfg(feature = "log_mmu")]
+                        println!("  mmu: Unmapping L1 table at {:?}", l1.as_phy_addr());
+                        l1_to_free = Some(l1 as *mut PageTable);
+                    }
+                }
+            }
             PageGetMutResult::Block => todo!("Splitting L0 blocks is not implemented"),
+        }
+
+        if let Some(l1_to_free) = l1_to_free {
+            self.0[vaddr >> 39] = 0;
+            unsafe {
+                drop(PageBox::from_raw(l1_to_free, PAGE_SIZE));
+            }
         }
     }
 
@@ -387,6 +465,12 @@ unsafe fn make_page_table_l1(page_table: &mut PageTable, attr: u64) {
             PT_ISH | attr;
     }
 }
+
+struct PageTableMeta {
+    refcount: u16,
+}
+
+static PT_META: IrqMutex<BTreeMap<PhyAddr, PageTableMeta>> = IrqMutex::new(BTreeMap::new());
 
 pub unsafe fn init() {
     // Create identity-mapped page tables at the start of low mem (0x0..) and at the end of

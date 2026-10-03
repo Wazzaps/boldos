@@ -352,11 +352,13 @@ pub fn ipc_test() -> ! {
     drop(region);
 
     // Region map stress test
-    for _ in 0..100 {
+    for i in 0..100 {
         let region = region_create_virtual(0, 8192).expect("Failed to create region");
         // println!("ipc_test: Region created: {:?}", region);
         let mapped_ptr = mm_map(None, &region, 8192).expect("Failed to map region");
-        println!("ipc_test: mapped region to {mapped_ptr:?}");
+        if i % 10 == 0 {
+            println!("ipc_test[{i}]: mapped region to {mapped_ptr:?}");
+        }
         mm_unmap_range(None, mapped_ptr, 8192).expect("Failed to unmap mapped region");
         drop(region);
     }
