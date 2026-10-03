@@ -124,7 +124,7 @@ fn main() {
                     counter
                 );
                 // delay_ticks(500000000);
-                sleep(Duration::from_secs(1));
+                sleep(Duration::from_millis(100));
             }
             loop {
                 sleep(Duration::from_secs(9999));
@@ -144,7 +144,7 @@ fn main() {
                 let is_ready = futex_wait(
                     FUTEX_WORD.as_ptr(),
                     0,
-                    Duration::from_millis(1500).as_micros() as u64,
+                    Duration::from_millis(150).as_micros() as u64,
                 )
                 .is_ok();
                 println!(
@@ -158,7 +158,7 @@ fn main() {
             }
 
             loop {
-                sleep(Duration::from_secs(1));
+                sleep(Duration::from_secs(9999));
             }
         },
         CreateThreadFlags::SharePageTable,
@@ -187,7 +187,7 @@ fn main() {
         }
 
         // delay_ticks(500000000);
-        sleep(Duration::from_secs(1));
+        sleep(Duration::from_millis(100));
     }
 
     ipc_test::ipc_test();

@@ -321,7 +321,7 @@ pub fn ipc_test() -> ! {
             AsciiStr(&mapped_region[..12])
         );
     }
-    mm_unmap_range(None, mapped_ptr, 4096).expect("Failed to unmap mapped region");
+    mm_unmap_range(None, mapped_ptr, 8192).expect("Failed to unmap mapped region");
     drop(region);
 
     let region = region_create_physical(0, 0x40000000, 4096).expect("Failed to create region");
@@ -350,6 +350,16 @@ pub fn ipc_test() -> ! {
     // );
 
     drop(region);
+
+    // Region map stress test
+    for _ in 0..100 {
+        let region = region_create_virtual(0, 8192).expect("Failed to create region");
+        // println!("ipc_test: Region created: {:?}", region);
+        let mapped_ptr = mm_map(None, &region, 8192).expect("Failed to map region");
+        println!("ipc_test: mapped region to {mapped_ptr:?}");
+        mm_unmap_range(None, mapped_ptr, 8192).expect("Failed to unmap mapped region");
+        drop(region);
+    }
 
     let (rx, tx) = port_create().expect("Failed to create port");
     println!("ipc_test: Port created: {:?}, {:?}", rx, tx);

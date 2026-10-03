@@ -493,7 +493,10 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                     );
                     thread.vunmap(region_arg.addr, region_arg.size);
 
-                    // TODO: Remove regions from thread.mm.regions vec
+                    thread.remove_mm_region(
+                        region_arg.addr,
+                        region_arg.addr.saturating_add(region_arg.size),
+                    );
                 } else {
                     assert_eq!(region_arg.addr, 0, "Region arg addr must be 0");
                     // Map the memory region

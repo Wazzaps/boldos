@@ -117,7 +117,7 @@ alloc: Initializing early allocator
   - [ ] MemoryMappings (address spaces for processes)
     - [x] Mapping of regions to the current address space
     - [x] Unmapping of regions from the current address space
-    - [ ] Actually reducing the ref count per freed page so the region can be freed
+    - [x] Actually reducing the ref count per freed page so the region can be freed
     - [ ] Mapping of regions to other address spaces
     - [ ] Unmapping of regions from other address spaces
   - [ ] Waiters (stateful futex/port waiting)

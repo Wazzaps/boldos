@@ -107,6 +107,43 @@ impl Thread {
         self.mm.borrow_mut().regions.push(mm_region);
     }
 
+    pub unsafe fn remove_mm_region(&mut self, remove_start: usize, remove_end: usize) {
+        let regions = &mut self.mm.borrow_mut().regions;
+        let mut i = 0;
+        while i < regions.len() {
+            let region = &mut regions[i];
+            let region_start = region.addr;
+            let region_end = region.addr + region.size;
+
+            if remove_end <= region_start || remove_start >= region_end {
+                // No overlap, move to the next region
+                i += 1;
+            } else if remove_start <= region_start && remove_end >= region_end {
+                // Whole region is covered by the removed range, remove it
+                regions.swap_remove(i);
+            } else if remove_start <= region_start {
+                // Start of the region is covered by the removed range, shrink the region
+                region.addr = remove_end;
+                region.size = region_end - remove_end;
+                i += 1;
+            } else if remove_end >= region_end {
+                // End of the region is covered by the removed range, shrink the region
+                region.size = remove_start - region.addr;
+                i += 1;
+            } else {
+                // Middle of the region is covered by the removed range, split the region
+                let new_region = MmRegion {
+                    addr: remove_end,
+                    size: region_end - remove_end,
+                    region: Arc::clone(&region.region),
+                };
+                region.size = remove_start - region.addr;
+                regions.push(new_region);
+                i += 1;
+            }
+        }
+    }
+
     pub fn start_sleep(&mut self, deadline_ms: u64) {
         self.sleep_deadline = deadline_ms;
         self.state = ThreadState::Sleeping;
