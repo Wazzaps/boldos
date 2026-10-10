@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 use core::arch::naked_asm;
 use kernel_api::user::{
-    control_thread, create_thread_raw, dump_hex_slice, mm_create, port_create, port_send,
+    control_thread, create_thread_raw, dump_hex_slice, mm_create, mm_map, port_create, port_send,
     region_create_virtual, region_write_full,
 };
 use kernel_api::{println, ControlThreadOp, CreateThreadFlags, RegionArg, RegionMapFlags};
@@ -32,7 +32,7 @@ pub fn process_test(example_bin: Vec<u8>) {
 
     let code_region_size = example_bin.len().next_multiple_of(4096);
     const BSS_SIZE: usize = 4 * 4096; // TODO: Hack until we have an ELF loader
-    println!("Process test: Code region size: {}", code_region_size);
+                                      // println!("Process test: Code region size: {}", code_region_size);
     let code_region =
         region_create_virtual(0, code_region_size + BSS_SIZE).expect("Failed to create region");
     region_write_full(&code_region, &example_bin, 0).expect("Failed to write code region");
@@ -47,24 +47,31 @@ pub fn process_test(example_bin: Vec<u8>) {
     }];
     let mm = mm_create(&mut regions).expect("Failed to create MM");
     let code_region_addr = regions[0].addr;
-    println!("Process test: Code region address: {:#x}", code_region_addr);
+    // println!("Process test: Code region address: {:#x}", code_region_addr);
 
     let (recv_handle, send_handle) = port_create().expect("Failed to create port");
-    println!(
-        "Process test: Port created: recv={:?}, send={:?}",
-        recv_handle, send_handle
-    );
+    // println!(
+    //     "Process test: Port created: recv={:?}, send={:?}",
+    //     recv_handle, send_handle
+    // );
+
+    let shmem_handle =
+        region_create_virtual(0, 4096).expect("Failed to create shared memory region");
+    let shmem = mm_map(None, &shmem_handle, 4096).expect("Failed to map shared memory region");
+    println!("Process test: Shared memory mapped to {shmem:?}");
+    let shmem = unsafe { core::slice::from_raw_parts_mut(shmem as *mut u8, 4096) };
+    shmem[0] = 123;
 
     let pid = create_thread_raw(
         code_region_addr,
-        recv_handle.as_u64() as usize,
+        0,
         CreateThreadFlags::empty(),
         Some(&[recv_handle]),
         Some(&mm),
     )
     .expect("Failed to create thread");
     println!("Process test: Thread created: {}", pid);
+    port_send(&send_handle, 0, b"Hello from parent!", &[shmem_handle])
+        .expect("Failed to send message");
     control_thread(pid, ControlThreadOp::Resume).expect("Failed to resume thread");
-
-    port_send(&send_handle, 0, b"Hello from parent!", &[]).expect("Failed to send message");
 }

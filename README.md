@@ -16,15 +16,15 @@ alloc: Initializing early allocator
  user: Starting usermode
 alloc: Expanding kernel heap by 16384 bytes
  user: Creating thread 1
- user: Entering thread 0xffffff004012a808
-[7] init: Hello from usermode!
+ user: Entering thread 0xffffff0040124808
+[6] init: Hello from usermode!
 [10] init: DTB mapped at 0x50200000, hexdump of first 32 bytes:
-[10]d00dfeed 00100000 00000040 00001db4 00000030 00000011 00000010 00000000 
+[11]d00dfeed 00100000 00000040 00001db4 00000030 00000011 00000010 00000000 
 [11]
 [12] init: Boot args: "placeholder kernel params"
 [12] init: RAM: 0p40000000 (268435456 bytes)
-[12] init: Expanding heap by 1048576 bytes
-[16] init: Mapped memory at 0x50400000
+[12] kernel_api: Expanding heap by 1048576 bytes
+[16] kernel_api: Mapped memory at 0x50400000
 [16] init: Heap vector: [1, 2, 3]
 [16] init: Extracting timer information from DTB
  user: LoadKernelDevice: GicAndTimer {
@@ -37,19 +37,16 @@ alloc: Expanding kernel heap by 16384 bytes
 [28] init: Detected virtio MMIO device with vendor id 0x554D4551, device type Block, version Modern
 [29] init: virtio: dma_alloc: phy_addr: 0x40030000 | virt_addr: 0x54400000
 (virtio spam truncated...)
-[38] init: virtio: dma_dealloc paddr: 40035000 | vaddr: 0x54800000 | pages: 1
-[38] init: Process test: Code region size: 20480
-[39] init: Process test: Code region address: 0x50000000
  user: Allocating port for thread 1 with recv_handle 4
-[40] init: Process test: Port created: recv=Handle(4), send=Handle(5)
  user: Creating thread 2
-[40] init: Process test: Thread created: 2
-[41] init: Expanding heap by 1048576 bytes
-[45] init: Mapped memory at 0x50400000
-[45] init: Hello from example_bin! Here's a heap vector: [1, 2, 3]
-[45] init: Received message from parent: Hello from parent!
+[36] init: Process test: Thread created: 2
+[37] kernel_api: Expanding heap by 1048576 bytes
+[40] kernel_api: Mapped memory at 0x50400000
+[41] example_bin: Hello from example_bin! Here's a heap vector: [1, 2, 3]
+[41] example_bin: Received message from parent: Hello from parent!
+[42] example_bin: Shmem value: 123
  user: Destroying thread 2 with code 0
- user: cpu idling for: 9998995ms
+ user: cpu idling for: 9998994ms
 
 ```
 
@@ -94,7 +91,7 @@ alloc: Expanding kernel heap by 16384 bytes
 - [x] Basic growable heap allocator in usermode
 - [x] Basic growable heap allocator in kernelmode
 - [ ] IPC
-  - [ ] Shared memory
+  - [x] Shared memory
   - [x] Futex
     - [x] Wait and Wake
     - [x] Timeouts

@@ -5,8 +5,8 @@ extern crate alloc;
 use alloc::boxed::Box;
 
 use crate::{
-    ControlThreadOp, CreateThreadFlags, FutexOp, KError, MemMapFlags, PhyMapFlags, Pid, RegionArg,
-    Syscall, kernel_device,
+    ControlThreadOp, CreateThreadFlags, FutexOp, HandleId, KError, MemMapFlags, PhyMapFlags, Pid,
+    RegionArg, RegionMapFlags, Syscall, kernel_device,
 };
 use core::arch::asm;
 use core::fmt::Write;
@@ -419,7 +419,7 @@ pub fn port_recv(
     port: &Handle,
     flags: u32,
     bytes: &mut [u8],
-    handles: &mut [Handle],
+    handles: &mut [HandleId],
 ) -> Result<(usize, usize), KError> {
     let mut num_bytes: u64;
     let mut num_handles: u64;
@@ -594,13 +594,13 @@ pub fn mm_modify(mm: Option<&Handle>, regions: &mut [RegionArg]) -> Result<(), K
     }
 }
 
-pub fn mm_map(mm: Option<&Handle>, range: &Handle, size: usize) -> Result<*mut (), KError> {
+pub fn mm_map(mm: Option<&Handle>, region: &Handle, size: usize) -> Result<*mut (), KError> {
     let mut region_args = [RegionArg {
-        region: range.0.get(),
+        region: region.0.get(),
         offset: 0,
         size: size,
         addr: 0,
-        flags: 0,
+        flags: RegionMapFlags::ReadWrite.bits(),
         #[cfg(target_pointer_width = "64")]
         _padding: 0,
     }];
@@ -706,5 +706,6 @@ macro_rules! get_msr {
 #[panic_handler]
 fn rust_panic(info: &PanicInfo) -> ! {
     let _ = write!(FmtWriteAdapter, "Panic: {}\n", info.message());
-    unsafe { exit(0xffffffff) };
+    // unsafe { exit(0xffffffff) };
+    loop {}
 }

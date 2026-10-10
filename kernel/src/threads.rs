@@ -12,6 +12,7 @@ use core::arch::asm;
 use core::cell::{RefCell, RefMut};
 use core::mem::{forget, MaybeUninit};
 use core::ptr::null_mut;
+use core::sync::atomic::{AtomicU64, Ordering};
 use kernel_api::{KError, MemMapFlags, PhyMapFlags, Pid};
 use tock_registers::interfaces::Writeable;
 
@@ -89,6 +90,17 @@ impl Thread {
             panic!("Too many handles");
         }
         handles.push(Handle { id, flags, data });
+    }
+
+    pub unsafe fn duplicate_handle(&mut self, id: u64, new_id: u64) -> Result<(), KError> {
+        let mut handles = self.handles.borrow_mut();
+        let handle = if let Some(handle) = handles.iter().find(|h| h.id == id) {
+            handle.duplicate(new_id)
+        } else {
+            return Err(KError::InvalidHandle);
+        };
+        handles.push(handle);
+        Ok(())
     }
 
     pub unsafe fn remove_handle(&mut self, id: u64) {
@@ -208,7 +220,7 @@ pub struct ThreadManager {
 
     active_futexes: RefCell<Vec<Futex>>,
 
-    next_handle_id: u64,
+    next_handle_id: AtomicU64,
 
     pub last_log_was_newline: bool,
 }
@@ -223,7 +235,7 @@ impl ThreadManager {
 
             active_futexes: RefCell::new(Vec::new()),
 
-            next_handle_id: 1,
+            next_handle_id: AtomicU64::new(1),
 
             last_log_was_newline: true,
         }));
@@ -232,6 +244,7 @@ impl ThreadManager {
         let (pid, mut thread) = mgr.create_thread(
             Arc::new(RefCell::new(Mm::new())),
             Arc::new(RefCell::new(Vec::new())),
+            false,
         );
         thread.state = ThreadState::Running;
         thread.last_scheduled_time = timer_get_absolute_time_ms();
@@ -269,6 +282,7 @@ impl ThreadManager {
         &mut self,
         mm: Arc<RefCell<Mm>>,
         handles: Arc<RefCell<Vec<Handle>>>,
+        pass_handles_array: bool,
     ) -> (Pid, ThreadMutLockGuard<'_>) {
         for pid_idx in 0.. {
             let block_idx = pid_idx / 64;
@@ -287,8 +301,35 @@ impl ThreadManager {
                     DEFAULT_STACK_SIZE as usize,
                     DEFAULT_PAGE_FLAGS,
                 );
-                let sp = stack_base_virt + DEFAULT_STACK_SIZE;
-                let new_thread = Thread::new(mm, handles, stack, sp);
+                let mut sp = stack_base_virt + DEFAULT_STACK_SIZE;
+
+                // The handle IDs in the new thread were just generated, so we pass
+                // them via the stack so it can know their IDs.
+                let mut handles_array_params = None;
+                if pass_handles_array {
+                    let handles = handles.borrow();
+                    let handles_array_size = handles.len() * 8;
+                    let handles_array_offset = DEFAULT_STACK_SIZE - handles_array_size;
+                    sp -= handles_array_size;
+                    unsafe {
+                        let handles_array = stack_base_phys
+                            .virt_mut::<u64>()
+                            .byte_offset(handles_array_offset as isize);
+                        for (i, handle) in handles.iter().enumerate() {
+                            handles_array.offset(i as isize).write(handle.id);
+                        }
+                    }
+                    handles_array_params = Some((
+                        (stack_base_virt + handles_array_offset) as u64,
+                        handles.len() as u64,
+                    ));
+                }
+
+                let mut new_thread = Thread::new(mm, handles, stack, sp);
+                if let Some(handles_array_params) = handles_array_params {
+                    new_thread.regs.gpr[0] = handles_array_params.0;
+                    new_thread.regs.gpr[1] = handles_array_params.1;
+                }
 
                 self.thread_bitmap[block_idx] |= 1 << bit_idx;
                 if self.threads.len() == pid_idx {
@@ -496,6 +537,7 @@ impl ThreadManager {
             recv_handle,
             buffer_len: 0,
             buffer: PageSlice::null(),
+            handles: Vec::new(),
         }))
     }
 
@@ -506,14 +548,14 @@ impl ThreadManager {
     /// Allocates a contiguous block of handle ids
     /// Returns the first handle id in the block
     /// Must allocate at least 1 handle id
-    pub fn reserve_handle_ids(&mut self, count: usize) -> u64 {
+    pub fn reserve_handle_ids(&self, count: usize) -> u64 {
         assert!(count > 0, "Cannot allocate 0 handle ids");
-        let res = self.next_handle_id + 1;
-        self.next_handle_id += count as u64;
-        res
+        self.next_handle_id
+            .fetch_add(count as u64, Ordering::SeqCst)
+            + 1
     }
 
-    pub fn reserve_handle_id(&mut self) -> u64 {
+    pub fn reserve_handle_id(&self) -> u64 {
         self.reserve_handle_ids(1)
     }
 

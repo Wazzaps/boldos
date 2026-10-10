@@ -23,10 +23,10 @@ pub struct Handle {
 }
 
 impl Handle {
-    pub fn duplicate(&self) -> Handle {
+    pub fn duplicate(&self, new_id: u64) -> Handle {
         // TODO: Deny duplicating certain ports
         Handle {
-            id: self.id,
+            id: new_id,
             flags: self.flags,
             data: self.data.clone(),
         }
@@ -41,12 +41,12 @@ pub enum HandleData {
     Waiter(WaiterHandle),
 }
 
-#[derive(FromZeros)]
 pub struct Port {
     pub recv_pid: Pid,
     pub recv_handle: u64,
     pub buffer_len: usize,
     pub buffer: PageSlice,
+    pub handles: Vec<Handle>,
 }
 
 #[derive(Clone)]

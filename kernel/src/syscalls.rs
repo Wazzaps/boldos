@@ -166,14 +166,17 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                         return;
                     }
                     let handle = unsafe { &*handle };
-                    out_handles.push(handle.duplicate());
+                    out_handles.push(handle.duplicate(mgr.reserve_handle_id()));
                 }
                 Arc::new(RefCell::new(out_handles))
             };
             drop(thread);
 
-            let (pid, mut new_thread) = mgr.create_thread(mm, new_handles);
-            new_thread.regs.gpr[0] = data_ptr;
+            let pass_handles_array = handles_ptr != 0;
+            let (pid, mut new_thread) = mgr.create_thread(mm, new_handles, pass_handles_array);
+            if !pass_handles_array {
+                new_thread.regs.gpr[0] = data_ptr;
+            }
             new_thread.regs.pc = func;
             e.gpr[0] = pid as u64;
             return;
@@ -272,7 +275,14 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
             }
         }
         Syscall::HandleDuplicate => {
-            todo!("Syscall::HandleDuplicate not implemented")
+            let mgr = ThreadManager::get_global();
+            let handle_id = e.gpr[0];
+            let mut thread = mgr.get_current_thread();
+            let new_id = mgr.reserve_handle_id();
+            e.gpr[0] = thread
+                .duplicate_handle(handle_id, new_id)
+                .err()
+                .map_or(new_id, |e| e.into());
         }
         Syscall::HandleClose => {
             let handle_id = e.gpr[0];
@@ -312,36 +322,44 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
             let _flags = e.gpr[1];
             let bytes_ptr = e.gpr[2];
             let bytes_len = e.gpr[3] as usize;
-            let _handles_ptr = e.gpr[4];
+            let handles_ptr = e.gpr[4];
             let handles_len = e.gpr[5];
             let mgr = ThreadManager::get_global();
             let mut thread = mgr.get_current_thread();
 
-            assert!(handles_len == 0, "Handle receiving not supported yet");
             assert!(
                 bytes_len <= PORT_MAX_MESSAGE_SIZE,
                 "message bytes buffer too large: {bytes_len}"
             );
 
-            e.gpr[0] = with_handle::<PortHandle>(&mut thread, port_handle_id, |_, handle, port| {
-                assert_eq!(handle.flags, PortHandle::FLAG_RECV);
-                let mut port = port.port.borrow_mut();
-                if port.buffer.as_ptr().is_null() {
-                    // No data
-                    KError::PortEmpty.into()
-                } else {
-                    let message_len = port.buffer_len;
-                    let copy_len = bytes_len.min(message_len);
-                    copy_to_user(
-                        bytes_ptr as usize,
-                        copy_len,
-                        &port.buffer.as_slice()[..copy_len],
-                    );
-                    // Deallocate the buffer
-                    port.buffer = PageSlice::null();
-                    message_len as u64
-                }
-            });
+            e.gpr[0] =
+                with_handle::<PortHandle>(&mut thread, port_handle_id, |thread, handle, port| {
+                    assert_eq!(handle.flags, PortHandle::FLAG_RECV);
+                    let mut port = port.port.borrow_mut();
+                    if port.buffer.as_ptr().is_null() {
+                        // No data
+                        KError::PortEmpty.into()
+                    } else {
+                        let message_len = port.buffer_len;
+                        let copy_len = bytes_len.min(message_len);
+                        copy_to_user(
+                            bytes_ptr as usize,
+                            copy_len,
+                            &port.buffer.as_slice()[..copy_len],
+                        );
+                        let handles = core::mem::take(&mut port.handles);
+                        e.gpr[1] = (handles.len() as u64).min(handles_len);
+                        for (i, handle) in
+                            handles.into_iter().enumerate().take(handles_len as usize)
+                        {
+                            copy_val_to_user(handles_ptr as usize + i * 8, &handle.id);
+                            thread.add_handle(handle.id, handle.flags, handle.data);
+                        }
+                        // Deallocate the buffer
+                        port.buffer = PageSlice::null();
+                        message_len as u64
+                    }
+                });
 
             return;
         }
@@ -350,16 +368,27 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
             let _flags = e.gpr[1];
             let bytes_ptr = e.gpr[2];
             let bytes_len = e.gpr[3] as usize;
-            let _handles_ptr = e.gpr[4];
+            let handles_ptr = e.gpr[4];
             let handles_len = e.gpr[5];
             let mgr = ThreadManager::get_global();
             let mut thread = mgr.get_current_thread();
 
-            assert!(handles_len == 0, "Handle sending not supported yet");
             assert!(
                 bytes_len <= PORT_MAX_MESSAGE_SIZE,
                 "message bytes buffer too large: {bytes_len}"
             );
+
+            let mut out_handles = Vec::with_capacity(handles_len as usize);
+            for i in 0..handles_len as usize {
+                let handle_id: u64 = copy_val_from_user(handles_ptr as usize + i * 8);
+                let handle = thread.find_handle(handle_id);
+                if handle.is_null() {
+                    e.gpr[0] = KError::InvalidHandle.into();
+                    return;
+                }
+                let handle = unsafe { &*handle };
+                out_handles.push(handle.duplicate(mgr.reserve_handle_id()));
+            }
 
             e.gpr[0] = with_handle::<PortHandle>(&mut thread, port_handle_id, |_, handle, port| {
                 assert!(
@@ -367,7 +396,7 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                         || handle.flags == PortHandle::FLAG_SEND_ONCE
                 );
                 let mut port = port.port.borrow_mut();
-                if port.buffer.as_ptr().is_null() {
+                if port.buffer.as_ptr().is_null() && port.handles.is_empty() {
                     // We can send data
                     let mut buffer = alloc_zeroed(bytes_len.div_ceil(PAGE_SIZE));
                     copy_from_user(
@@ -377,6 +406,7 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                     );
                     port.buffer = buffer;
                     port.buffer_len = bytes_len as usize;
+                    port.handles = out_handles;
                     0
                 } else {
                     KError::PortFull.into()

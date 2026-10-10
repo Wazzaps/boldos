@@ -3,16 +3,19 @@ use std::process::Command;
 use walkdir::WalkDir;
 
 fn main() {
-    for entry in WalkDir::new("../init")
-        .into_iter()
-        .filter_entry(|e| e.file_name() != "target")
-        .map(|e| e.expect("Failed to read init binary directory"))
-        .filter(|e| e.file_type().is_file())
-    {
-        println!(
-            "cargo:rerun-if-changed={}",
-            entry.path().to_str().expect("File path was not UTF-8")
-        );
+    let dirs = ["../init", "../example_bin", "../kernel_api"];
+    for dir in dirs {
+        for entry in WalkDir::new(dir)
+            .into_iter()
+            .filter_entry(|e| e.file_name() != "target")
+            .map(|e| e.expect(&format!("Failed to read {} directory", dir)))
+            .filter(|e| e.file_type().is_file())
+        {
+            println!(
+                "cargo:rerun-if-changed={}",
+                entry.path().to_str().expect("File path was not UTF-8")
+            );
+        }
     }
 
     let out_dir = var_os("OUT_DIR").unwrap();
@@ -24,18 +27,6 @@ fn main() {
         .success()
         .then_some(())
         .expect("Failed to compile init binary");
-
-    for entry in WalkDir::new("../example_bin")
-        .into_iter()
-        .filter_entry(|e| e.file_name() != "target")
-        .map(|e| e.expect("Failed to read example_bin binary directory"))
-        .filter(|e| e.file_type().is_file())
-    {
-        println!(
-            "cargo:rerun-if-changed={}",
-            entry.path().to_str().expect("File path was not UTF-8")
-        );
-    }
     Command::new("make")
         .current_dir("../example_bin")
         .status()

@@ -60,7 +60,7 @@ pub fn virtio_experiment(dtb: &DevTree) -> Option<Vec<u8>> {
                             //         Ok(()) => info!("virtio-socket test finished successfully"),
                             //         Err(e) => error!("virtio-socket test finished with error '{e:?}'"),
                             //     },
-                            DeviceType::_9P => virtio_9p(transport),
+                            //     DeviceType::_9P => virtio_9p(transport),
                             //     DeviceType::EntropySource => virtio_rng(transport),
                             t => println!("Unrecognized virtio device: {t:?}"),
                         }
