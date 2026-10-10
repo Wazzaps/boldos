@@ -124,6 +124,7 @@ alloc: Initializing early allocator
   - [ ] Waiters (stateful futex/port waiting)
   - [ ] Shared ring buffer over regions & futex
   - [ ] Objects/Interfaces/Methods
+= [x] Thread/Process termination
 
 ### Milestone 3: Usable for something
 

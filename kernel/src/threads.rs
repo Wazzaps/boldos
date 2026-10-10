@@ -387,13 +387,33 @@ impl ThreadManager {
         let block_idx = pid_idx / 64;
         let bit_idx = pid_idx % 64;
         if block_idx as usize >= self.thread_bitmap.len() {
-            panic!("Thread {pid_idx} not found");
+            panic!("Thread {pid} not found");
         }
         if self.thread_bitmap[block_idx as usize] & (1 << bit_idx) == 0 {
-            panic!("Thread {pid_idx} not found");
+            panic!("Thread {pid} not found");
         }
         let thread = self.threads[pid_idx as usize].borrow_mut();
         unsafe { RefMut::map(thread, |t| t.assume_init_mut()) }
+    }
+
+    pub fn destroy_thread(&mut self, pid: Pid) {
+        assert!(pid > 0, "Thread 0 is invalid");
+        let pid_idx = pid - 1;
+        let block_idx = pid_idx / 64;
+        let bit_idx = pid_idx % 64;
+        if block_idx as usize >= self.thread_bitmap.len() {
+            panic!("Thread {pid} not found");
+        }
+        if self.thread_bitmap[block_idx as usize] & (1 << bit_idx) == 0 {
+            panic!("Thread {pid} not found");
+        }
+        let mut thread = self.threads[pid_idx as usize].borrow_mut();
+
+        println!(" user: Destroying thread {pid}");
+
+        // Drop the thread and mark it as free
+        unsafe { thread.assume_init_drop() };
+        self.thread_bitmap[block_idx as usize] &= !(1 << bit_idx);
     }
 
     fn get_next_deadline(&mut self) -> (Pid, u64) {
@@ -445,13 +465,14 @@ impl ThreadManager {
             //     " user: Switching from thread {} to thread {}",
             //     self.current_thread, next_pid
             // );
-            // Save current thread
-            let mut current_thread = self.get_current_thread();
-            current_thread.save(e);
-            if current_thread.state == ThreadState::Running {
-                current_thread.state = ThreadState::Runnable;
+            if self.current_thread != 0 {
+                // Save current thread
+                let mut current_thread = self.get_current_thread();
+                current_thread.save(e);
+                if current_thread.state == ThreadState::Running {
+                    current_thread.state = ThreadState::Runnable;
+                }
             }
-            drop(current_thread);
 
             // Switch to next thread
             self.current_thread = next_pid;

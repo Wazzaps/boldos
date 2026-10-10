@@ -23,7 +23,10 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
     };
     match syscall_num {
         Syscall::Exit => {
-            todo!("Syscall::Exit not implemented")
+            let mgr = ThreadManager::get_global();
+            mgr.destroy_thread(mgr.current_thread);
+            mgr.current_thread = 0;
+            mgr.schedule(e);
         }
         Syscall::Log => {
             let mgr = ThreadManager::get_global();

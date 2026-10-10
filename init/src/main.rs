@@ -126,9 +126,7 @@ fn main() {
                 // delay_ticks(500000000);
                 sleep(Duration::from_millis(100));
             }
-            loop {
-                sleep(Duration::from_secs(9999));
-            }
+            unsafe { exit(0) };
         },
         CreateThreadFlags::SharePageTable,
     )
@@ -157,9 +155,7 @@ fn main() {
                 }
             }
 
-            loop {
-                sleep(Duration::from_secs(9999));
-            }
+            unsafe { exit(0) };
         },
         CreateThreadFlags::SharePageTable,
     )
@@ -203,5 +199,5 @@ pub extern "C" fn _start() -> ! {
 #[panic_handler]
 fn rust_panic(info: &PanicInfo) -> ! {
     let _ = write!(FmtWriteAdapter, "Panic: {}\n", info.message());
-    loop {}
+    unsafe { exit(0xffffffff) };
 }
