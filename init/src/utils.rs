@@ -1,8 +1,8 @@
 use alloc::boxed::Box;
-use core::{arch::asm, time::Duration};
+use core::{arch::asm, num::NonZeroU64, time::Duration};
 use kernel_api::{
     kernel_device, ControlThreadOp, CreateThreadFlags, FutexOp, KError, MemMapFlags, PhyMapFlags,
-    Pid, Syscall,
+    Pid, RegionArg, Syscall,
 };
 use num_enum::FromPrimitive;
 
@@ -34,6 +34,56 @@ macro_rules! print {
 macro_rules! println {
     () => ($crate::print!("\n"));
     ($($arg:tt)*) => ($crate::print!(" init: {}\n", format_args!($($arg)*)));
+}
+
+#[derive(Debug)]
+pub struct Handle(NonZeroU64);
+
+impl Handle {
+    pub fn as_raw(&self) -> NonZeroU64 {
+        self.0
+    }
+
+    pub fn as_u64(&self) -> u64 {
+        self.0.get()
+    }
+
+    pub fn duplicate(&self) -> Result<Self, KError> {
+        let mut new_handle: u64;
+        unsafe {
+            asm!(
+            "svc #0",
+            in("x0") self.0.get(),
+            in("x8") Syscall::HandleDuplicate as u64,
+            lateout("x0") new_handle,
+            );
+        }
+        if (new_handle as i64) < 0 {
+            Err(KError::from_primitive(new_handle as i32))
+        } else {
+            Ok(Handle(new_handle.try_into().unwrap()))
+        }
+    }
+}
+
+impl Drop for Handle {
+    fn drop(&mut self) {
+        let mut result: i64;
+        unsafe {
+            asm!(
+            "svc #0",
+            in("x0") self.0.get(),
+            in("x8") Syscall::HandleClose as u64,
+            lateout("x0") result,
+            );
+        }
+        if (result as i64) < 0 {
+            panic!(
+                "Failed to close handle: {:?}",
+                KError::from_primitive(result as i32)
+            );
+        }
+    }
 }
 
 pub unsafe fn exit(code: u32) -> ! {
@@ -179,10 +229,7 @@ pub fn delay_ticks(ticks: u64) {
     }
 }
 
-pub fn create_thread<F: FnOnce() -> ! + Send + 'static>(
-    func: F,
-    flags: CreateThreadFlags,
-) -> Result<Pid, KError> {
+pub fn create_thread<F: FnOnce() -> ! + Send + 'static>(func: F) -> Result<Pid, KError> {
     let data = Box::into_raw(Box::new(func)) as *mut ();
 
     extern "C" fn trampoline<F: FnOnce() -> !>(data: *mut ()) -> ! {
@@ -190,13 +237,21 @@ pub fn create_thread<F: FnOnce() -> ! + Send + 'static>(
         closure()
     }
 
-    create_thread_raw(trampoline::<F>, data, flags)
+    create_thread_raw(
+        trampoline::<F> as usize,
+        data as usize,
+        CreateThreadFlags::empty(),
+        None,
+        None,
+    )
 }
 
 pub fn create_thread_raw(
-    func: extern "C" fn(*mut ()) -> !,
-    data: *mut (),
+    func: usize,
+    data: usize,
     flags: CreateThreadFlags,
+    handles: Option<&[Handle]>,
+    mm: Option<&Handle>,
 ) -> Result<Pid, KError> {
     let mut res: i64;
     unsafe {
@@ -205,6 +260,9 @@ pub fn create_thread_raw(
         in("x0") func as u64,
         in("x1") data as u64,
         in("x2") flags.bits(),
+        in("x3") handles.map_or(0, |h| h.as_ptr() as u64),
+        in("x4") handles.map_or(0, |h| h.len() as u64),
+        in("x5") mm.map_or(0, |h| h.0.get()),
         in("x8") Syscall::CreateThread as u64,
         lateout("x0") res,
         );
@@ -289,6 +347,260 @@ pub fn futex_wait(word: *const u32, val: u32, timeout_micros: u64) -> Result<(),
 
 pub fn futex_wake(word: *const u32, waiters_to_wake: u32) -> Result<(), KError> {
     futex(word, FutexOp::WAKE, waiters_to_wake, 0)
+}
+
+pub fn port_create() -> Result<(Handle, Handle), KError> {
+    let mut recv_handle: u64;
+    let mut send_handle: u64;
+    unsafe {
+        asm!(
+        "svc #0",
+        in("x8") Syscall::PortCreate as u64,
+        lateout("x0") recv_handle,
+        lateout("x1") send_handle,
+        );
+    }
+    if (recv_handle as i64) < 0 {
+        Err(KError::from_primitive(recv_handle as i32))
+    } else {
+        Ok((
+            Handle(recv_handle.try_into().unwrap()),
+            Handle(send_handle.try_into().unwrap()),
+        ))
+    }
+}
+
+pub fn port_send(
+    port: &Handle,
+    flags: u32,
+    bytes: &[u8],
+    handles: &[Handle],
+) -> Result<(), KError> {
+    let mut result: i64;
+    unsafe {
+        asm!(
+        "svc #0",
+        in("x0") port.0.get(),
+        in("x1") flags,
+        in("x2") bytes.as_ptr(),
+        in("x3") bytes.len(),
+        in("x4") handles.as_ptr(),
+        in("x5") handles.len(),
+        in("x8") Syscall::PortSend as u64,
+        lateout("x0") result,
+        );
+    }
+    if result < 0 {
+        Err(KError::from_primitive(result as i32))
+    } else {
+        Ok(())
+    }
+}
+
+pub fn port_recv(
+    port: &Handle,
+    flags: u32,
+    bytes: &mut [u8],
+    handles: &mut [Handle],
+) -> Result<(usize, usize), KError> {
+    let mut num_bytes: u64;
+    let mut num_handles: u64;
+    unsafe {
+        asm!(
+        "svc #0",
+        in("x0") port.0.get(),
+        in("x1") flags,
+        in("x2") bytes.as_ptr(),
+        in("x3") bytes.len(),
+        in("x4") handles.as_ptr(),
+        in("x5") handles.len(),
+        in("x8") Syscall::PortRecv as u64,
+        lateout("x0") num_bytes,
+        lateout("x1") num_handles,
+        );
+    }
+    if (num_bytes as i64) < 0 {
+        Err(KError::from_primitive(num_bytes as i32))
+    } else {
+        Ok((num_bytes as usize, num_handles as usize))
+    }
+}
+
+pub fn region_create_virtual(flags: u32, len: usize) -> Result<Handle, KError> {
+    let mut handle: u64;
+    unsafe {
+        asm!(
+        "svc #0",
+        in("x0") flags as u64,
+        in("x1") len as u64,
+        in("x8") Syscall::RegionCreateVirtual as u64,
+        lateout("x0") handle,
+        );
+    }
+    if (handle as i64) < 0 {
+        Err(KError::from_primitive(handle as i32))
+    } else {
+        Ok(Handle(handle.try_into().unwrap()))
+    }
+}
+
+pub fn region_create_physical(flags: u32, phy_addr: usize, len: usize) -> Result<Handle, KError> {
+    let mut handle: u64;
+    unsafe {
+        asm!(
+        "svc #0",
+        in("x0") flags as u64,
+        in("x1") phy_addr as u64,
+        in("x2") len as u64,
+        in("x8") Syscall::RegionCreatePhysical as u64,
+        lateout("x0") handle,
+        );
+    }
+    if (handle as i64) < 0 {
+        Err(KError::from_primitive(handle as i32))
+    } else {
+        Ok(Handle(handle.try_into().unwrap()))
+    }
+}
+
+pub fn region_get_size(region: &Handle) -> Result<usize, KError> {
+    let mut size: u64;
+    unsafe {
+        asm!(
+        "svc #0",
+        in("x0") region.0.get(),
+        in("x8") Syscall::RegionGetSize as u64,
+        lateout("x0") size,
+        );
+    }
+    if (size as i64) < 0 {
+        Err(KError::from_primitive(size as i32))
+    } else {
+        Ok(size as usize)
+    }
+}
+
+pub fn region_read(region: &Handle, bytes: &mut [u8], offset: usize) -> Result<usize, KError> {
+    let mut result: u64;
+    unsafe {
+        asm!(
+        "svc #0",
+        in("x0") region.0.get(),
+        in("x1") bytes.as_ptr(),
+        in("x2") bytes.len(),
+        in("x3") offset as u64,
+        in("x8") Syscall::RegionRead as u64,
+        lateout("x0") result,
+        );
+    }
+    if (result as i64) < 0 {
+        Err(KError::from_primitive(result as i32))
+    } else {
+        Ok(result as usize)
+    }
+}
+
+pub fn region_read_full(region: &Handle, bytes: &mut [u8], offset: usize) -> Result<(), KError> {
+    let read_bytes = region_read(region, bytes, offset)?;
+    assert!(read_bytes <= bytes.len());
+    if read_bytes < bytes.len() {
+        return Err(KError::TooSmall);
+    }
+    Ok(())
+}
+
+pub fn region_write(region: &Handle, bytes: &[u8], offset: usize) -> Result<usize, KError> {
+    let mut result: u64;
+    unsafe {
+        asm!(
+        "svc #0",
+        in("x0") region.0.get(),
+        in("x1") bytes.as_ptr(),
+        in("x2") bytes.len(),
+        in("x3") offset as u64,
+        in("x8") Syscall::RegionWrite as u64,
+        lateout("x0") result,
+        );
+    }
+    if (result as i64) < 0 {
+        Err(KError::from_primitive(result as i32))
+    } else {
+        Ok(result as usize)
+    }
+}
+
+pub fn region_write_full(region: &Handle, bytes: &[u8], offset: usize) -> Result<(), KError> {
+    let written_bytes = region_write(region, bytes, offset)?;
+    assert!(written_bytes <= bytes.len());
+    if written_bytes < bytes.len() {
+        return Err(KError::TooSmall);
+    }
+    Ok(())
+}
+
+pub fn mm_create(regions: &mut [RegionArg]) -> Result<Handle, KError> {
+    let mut result: u64;
+    unsafe {
+        asm!(
+        "svc #0",
+        in("x0") 0,
+        in("x1") regions.as_ptr(),
+        in("x2") regions.len(),
+        in("x8") Syscall::MmCreate as u64,
+        lateout("x0") result,
+        );
+    }
+    if (result as i64) < 0 {
+        Err(KError::from_primitive(result as i32))
+    } else {
+        Ok(Handle(result.try_into().unwrap()))
+    }
+}
+
+pub fn mm_modify(mm: Option<&Handle>, regions: &mut [RegionArg]) -> Result<(), KError> {
+    let mut result: i64;
+    unsafe {
+        asm!(
+        "svc #0",
+        in("x0") mm.map_or(0, |h| h.0.get()),
+        in("x1") regions.as_ptr(),
+        in("x2") regions.len(),
+        in("x8") Syscall::MmModify as u64,
+        lateout("x0") result,
+        );
+    }
+    if (result as i64) < 0 {
+        Err(KError::from_primitive(result as i32))
+    } else {
+        Ok(())
+    }
+}
+
+pub fn mm_map(mm: Option<&Handle>, range: &Handle, size: usize) -> Result<*mut (), KError> {
+    let mut region_args = [RegionArg {
+        region: range.0.get(),
+        offset: 0,
+        size: size,
+        addr: 0,
+        flags: 0,
+        #[cfg(target_pointer_width = "64")]
+        _padding: 0,
+    }];
+    mm_modify(mm, &mut region_args)?;
+    Ok(region_args[0].addr as *mut ())
+}
+
+pub fn mm_unmap_range(mm: Option<&Handle>, addr: *mut (), size: usize) -> Result<(), KError> {
+    let mut region_args = [RegionArg {
+        region: 0,
+        offset: 0,
+        size: size,
+        addr: addr as usize,
+        flags: 0,
+        #[cfg(target_pointer_width = "64")]
+        _padding: 0,
+    }];
+    mm_modify(mm, &mut region_args)
 }
 
 #[allow(dead_code)]

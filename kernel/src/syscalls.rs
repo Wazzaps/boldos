@@ -2,11 +2,17 @@ use crate::aarch64::exceptions::ExceptionContext;
 use crate::aarch64::mmu;
 use crate::drv::arm_gic::timer_get_absolute_time_ms;
 use crate::drv::qemu_console::puts;
-use crate::ipc::{Handle, HandleData, MmRegion, PortHandle, RegionHandle, PORT_MAX_MESSAGE_SIZE};
+use crate::ipc::{
+    Handle, HandleData, Mm, MmHandle, PortHandle, RegionHandle, WaiterHandle, MAX_HANDLES,
+    PORT_MAX_MESSAGE_SIZE,
+};
 use crate::page_alloc::{self, add_memory_node, alloc_zeroed, PageSlice, PhyAddr, PAGE_SIZE};
 use crate::threads::{PhyMapResult, Thread, ThreadManager};
 use crate::{drv, print, println};
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::arch::asm;
+use core::cell::RefCell;
 use core::mem::MaybeUninit;
 use kernel_api::kernel_device::KernelDeviceId;
 use kernel_api::{
@@ -24,7 +30,8 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
     match syscall_num {
         Syscall::Exit => {
             let mgr = ThreadManager::get_global();
-            mgr.destroy_thread(mgr.current_thread);
+            let code = e.gpr[0];
+            mgr.destroy_thread(mgr.current_thread, code as u32);
             mgr.current_thread = 0;
             mgr.schedule(e);
         }
@@ -122,30 +129,52 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
             mgr.schedule(e);
         }
         Syscall::CreateThread => {
+            let mgr = ThreadManager::get_global();
             let func = e.gpr[0];
             let data_ptr = e.gpr[1];
-            let flags = CreateThreadFlags::from_bits_truncate(e.gpr[2]);
+            let _flags = CreateThreadFlags::from_bits_truncate(e.gpr[2]);
+            let handles_ptr = e.gpr[3];
+            let handles_len = e.gpr[4];
+            let mm_handle = e.gpr[5];
+            let mut thread = mgr.get_current_thread();
 
-            let mgr = ThreadManager::get_global();
-            let share_page_table = if flags.contains(CreateThreadFlags::SharePageTable) {
-                Some(mgr.current_thread)
-            } else {
-                None
-            };
-            let share_handles = if flags.contains(CreateThreadFlags::ShareHandles) {
-                Some(mgr.current_thread)
-            } else {
-                None
-            };
-
-            let (pid, mut thread) =
-                mgr.create_thread(share_page_table.clone(), share_handles.clone());
-            thread.regs.gpr[0] = data_ptr;
-            thread.regs.pc = func;
-            if share_page_table.is_none() {
-                // TODO: Load executables in user mode
-                thread.map_init_binary();
+            if handles_len > MAX_HANDLES as u64 {
+                e.gpr[0] = KError::TooBig.into();
+                return;
             }
+
+            let mm = if mm_handle == 0 {
+                thread.clone_mm()
+            } else {
+                let mut out_mm = None;
+                with_handle::<MmHandle>(&mut thread, mm_handle, |_, _, mm| {
+                    out_mm = Some(mm.mm.clone());
+                    0
+                });
+                out_mm.expect("Invalid MM handle")
+            };
+
+            let new_handles = if handles_ptr == 0 {
+                thread.clone_handles()
+            } else {
+                let mut out_handles = Vec::with_capacity(handles_len as usize);
+                for i in 0..handles_len as usize {
+                    let handle_id: u64 = copy_val_from_user(handles_ptr as usize + i * 8);
+                    let handle = thread.find_handle(handle_id);
+                    if handle.is_null() {
+                        e.gpr[0] = KError::InvalidHandle.into();
+                        return;
+                    }
+                    let handle = unsafe { &*handle };
+                    out_handles.push(handle.duplicate());
+                }
+                Arc::new(RefCell::new(out_handles))
+            };
+            drop(thread);
+
+            let (pid, mut new_thread) = mgr.create_thread(mm, new_handles);
+            new_thread.regs.gpr[0] = data_ptr;
+            new_thread.regs.pc = func;
             e.gpr[0] = pid as u64;
             return;
         }
@@ -286,6 +315,7 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
             let _handles_ptr = e.gpr[4];
             let handles_len = e.gpr[5];
             let mgr = ThreadManager::get_global();
+            let mut thread = mgr.get_current_thread();
 
             assert!(handles_len == 0, "Handle receiving not supported yet");
             assert!(
@@ -293,7 +323,7 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                 "message bytes buffer too large: {bytes_len}"
             );
 
-            e.gpr[0] = with_handle::<PortHandle>(mgr, port_handle_id, |_, _, handle, port| {
+            e.gpr[0] = with_handle::<PortHandle>(&mut thread, port_handle_id, |_, handle, port| {
                 assert_eq!(handle.flags, PortHandle::FLAG_RECV);
                 let mut port = port.port.borrow_mut();
                 if port.buffer.as_ptr().is_null() {
@@ -323,6 +353,7 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
             let _handles_ptr = e.gpr[4];
             let handles_len = e.gpr[5];
             let mgr = ThreadManager::get_global();
+            let mut thread = mgr.get_current_thread();
 
             assert!(handles_len == 0, "Handle sending not supported yet");
             assert!(
@@ -330,7 +361,7 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                 "message bytes buffer too large: {bytes_len}"
             );
 
-            e.gpr[0] = with_handle::<PortHandle>(mgr, port_handle_id, |_, _, handle, port| {
+            e.gpr[0] = with_handle::<PortHandle>(&mut thread, port_handle_id, |_, handle, port| {
                 assert!(
                     handle.flags == PortHandle::FLAG_SEND
                         || handle.flags == PortHandle::FLAG_SEND_ONCE
@@ -411,10 +442,12 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
         Syscall::RegionGetSize => {
             let region_handle_id = e.gpr[0];
             let mgr = ThreadManager::get_global();
+            let mut thread = mgr.get_current_thread();
 
-            e.gpr[0] = with_handle::<RegionHandle>(mgr, region_handle_id, |_, _, _, region| {
-                region.region.borrow().data.len() as u64
-            });
+            e.gpr[0] =
+                with_handle::<RegionHandle>(&mut thread, region_handle_id, |_, _, region| {
+                    region.region.borrow().data.len() as u64
+                });
         }
         Syscall::RegionRead => {
             let region_handle_id = e.gpr[0];
@@ -422,22 +455,24 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
             let bytes_len = e.gpr[2] as usize;
             let region_offset = e.gpr[3] as usize;
             let mgr = ThreadManager::get_global();
+            let mut thread = mgr.get_current_thread();
 
-            e.gpr[0] = with_handle::<RegionHandle>(mgr, region_handle_id, |_, _, _, region| {
-                let region = region.region.borrow();
-                let actual_size = region.data.len().saturating_sub(region_offset);
-                let read_bytes = actual_size.min(bytes_len);
-                // println!(
-                //     " user: RegionRead: read_bytes={read_bytes} ptr={:x?}",
-                //     (*region.region).data.as_ptr()
-                // );
-                copy_to_user(
-                    bytes_ptr as usize,
-                    read_bytes,
-                    &region.data.as_slice()[region_offset..region_offset + read_bytes],
-                );
-                read_bytes as u64
-            });
+            e.gpr[0] =
+                with_handle::<RegionHandle>(&mut thread, region_handle_id, |_, _, region| {
+                    let region = region.region.borrow();
+                    let actual_size = region.data.len().saturating_sub(region_offset);
+                    let read_bytes = actual_size.min(bytes_len);
+                    // println!(
+                    //     " user: RegionRead: read_bytes={read_bytes} ptr={:x?}",
+                    //     (*region.region).data.as_ptr()
+                    // );
+                    copy_to_user(
+                        bytes_ptr as usize,
+                        read_bytes,
+                        &region.data.as_slice()[region_offset..region_offset + read_bytes],
+                    );
+                    read_bytes as u64
+                });
         }
         Syscall::RegionWrite => {
             let region_handle_id = e.gpr[0];
@@ -445,97 +480,79 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
             let bytes_len = e.gpr[2] as usize;
             let region_offset = e.gpr[3] as usize;
             let mgr = ThreadManager::get_global();
+            let mut thread = mgr.get_current_thread();
 
-            e.gpr[0] = with_handle::<RegionHandle>(mgr, region_handle_id, |_, _, _, region| {
-                let mut region = region.region.borrow_mut();
-                let actual_size = region.data.len().saturating_sub(region_offset);
-                let written_bytes = actual_size.min(bytes_len);
-                // println!(
-                //     " user: RegionWrite: written_bytes={written_bytes} ptr={:x?}",
-                //     (*region.region).data.as_ptr()
-                // );
-                copy_from_user(
-                    bytes_ptr as usize,
-                    written_bytes,
-                    &mut region.data.as_mut_slice()[region_offset..region_offset + written_bytes],
-                );
-                written_bytes as u64
-            });
+            e.gpr[0] =
+                with_handle::<RegionHandle>(&mut thread, region_handle_id, |_, _, region| {
+                    let mut region = region.region.borrow_mut();
+                    let actual_size = region.data.len().saturating_sub(region_offset);
+                    let written_bytes = actual_size.min(bytes_len);
+                    // println!(
+                    //     " user: RegionWrite: written_bytes={written_bytes} ptr={:x?}",
+                    //     (*region.region).data.as_ptr()
+                    // );
+                    copy_from_user(
+                        bytes_ptr as usize,
+                        written_bytes,
+                        &mut region.data.as_mut_slice()
+                            [region_offset..region_offset + written_bytes],
+                    );
+                    written_bytes as u64
+                });
         }
         Syscall::MmCreate => {
-            todo!("Syscall::MmCreate not implemented")
+            let _mm_flags = e.gpr[0];
+            let regions_ptr = e.gpr[1];
+            let regions_len = e.gpr[2] as usize;
+            let mgr = ThreadManager::get_global();
+
+            let mm_handle = mgr.reserve_handle_id();
+            let mut mm = Mm::new();
+
+            let mut thread = mgr.get_current_thread();
+            let res = match mm_modify(
+                &mut thread,
+                Some(&mut mm),
+                regions_ptr as usize,
+                regions_len,
+            ) {
+                Ok(_) => mm_handle,
+                Err(e) => e.into(),
+            };
+
+            thread.add_handle(
+                mm_handle,
+                0,
+                HandleData::Mm(MmHandle {
+                    mm: Arc::new(RefCell::new(mm)),
+                }),
+            );
+
+            e.gpr[0] = res;
         }
         Syscall::MmModify => {
             let mm_handle_id = e.gpr[0];
             let regions_ptr = e.gpr[1];
             let regions_len = e.gpr[2] as usize;
             let mgr = ThreadManager::get_global();
+            let mut thread = mgr.get_current_thread();
 
-            assert_eq!(
-                mm_handle_id, 0,
-                "Only the current process's mm can be modified currently"
-            );
-
-            let mut region_arg: RegionArg;
-            for i in 0..regions_len {
-                region_arg = copy_val_from_user(regions_ptr as usize + i * size_of::<RegionArg>());
-                let flags = RegionMapFlags::from_bits_truncate(region_arg.flags as u64);
-
-                if region_arg.region == 0 {
-                    // TODO: Support a MemProtect flag to change permissions instead of unmapping
-
-                    // Unmap the memory region
-                    let mut thread = mgr.get_current_thread();
-                    assert!(
-                        region_arg.addr.is_multiple_of(PAGE_SIZE),
-                        "Unmap region arg addr must be page aligned"
-                    );
-                    assert!(
-                        region_arg.size.is_multiple_of(PAGE_SIZE),
-                        "Unmap region arg size must be page aligned"
-                    );
-                    thread.vunmap(region_arg.addr, region_arg.size);
-
-                    thread.remove_mm_region(
-                        region_arg.addr,
-                        region_arg.addr.saturating_add(region_arg.size),
-                    );
-                } else {
-                    assert_eq!(region_arg.addr, 0, "Region arg addr must be 0");
-                    // Map the memory region
-                    with_handle::<RegionHandle>(mgr, region_arg.region, |_, thread, _, region| {
-                        let mut page_flags: u64 = mmu::PT_ISH | mmu::PT_MEM; // inner shareable
-                        if flags.contains(RegionMapFlags::ReadWrite) {
-                            page_flags |= mmu::PT_RW_EL0;
-                        } else {
-                            page_flags |= mmu::PT_RO_EL0;
-                        }
-
-                        let region_val = region.region.borrow();
-                        let virt_addr = thread.vmap(
-                            PhyAddr::from_virt(region_val.data.as_ptr()),
-                            region_val.data.len(),
-                            page_flags,
-                        );
-                        // Ensure the region doesn't get freed
-                        thread.add_mm_region(MmRegion {
-                            region: region.region.clone(),
-                            addr: virt_addr,
-                            size: region_val.data.len(),
-                        });
-                        region_arg.addr = virt_addr;
-                        0
-                    });
-                    // TODO: validate the regions before mapping anything to be "all or nothing"
-                    //  (unless it gets changed concurrently, not sure it's interesting to handle)
-                    copy_val_to_user(
-                        regions_ptr as usize + i * size_of::<RegionArg>(),
-                        &region_arg,
-                    );
-                }
-            }
-
-            e.gpr[0] = 0;
+            e.gpr[0] = if mm_handle_id != 0 {
+                with_handle::<MmHandle>(&mut thread, mm_handle_id, |thread, _, mm| {
+                    mm_modify(
+                        thread,
+                        Some(&mut mm.mm.borrow_mut()),
+                        regions_ptr as usize,
+                        regions_len,
+                    )
+                    .err()
+                    .map_or(0, |e| e.into())
+                })
+            } else {
+                mm_modify(&mut thread, None, regions_ptr as usize, regions_len)
+                    .err()
+                    .map_or(0, |e| e.into())
+            };
         }
         Syscall::WaiterCreate => {
             todo!("Syscall::WaiterCreate not implemented")
@@ -579,20 +596,17 @@ unsafe fn copy_val_to_user<T: IntoBytes + Immutable>(user_pointer: usize, value:
 }
 
 unsafe fn with_handle<H: DowncastHandle>(
-    mgr: &ThreadManager,
+    thread: &mut Thread,
     handle_id: u64,
-    f: impl FnOnce(&ThreadManager, &mut Thread, &Handle, &H) -> u64,
+    f: impl FnOnce(&mut Thread, &Handle, &H) -> u64,
 ) -> u64 {
-    let mut thread = mgr.get_current_thread();
     let handle = thread.find_handle(handle_id);
     let mut result = KError::InvalidHandle.into();
     if !handle.is_null() {
         let handle = &*handle;
         let downcasted_handle = H::downcast_handle(handle);
-        result = f(mgr, &mut thread, handle, downcasted_handle);
+        result = f(thread, handle, downcasted_handle);
     }
-
-    drop(thread);
 
     result
 }
@@ -617,4 +631,92 @@ impl DowncastHandle for PortHandle {
             _ => todo!("Expected port handle"),
         }
     }
+}
+
+impl DowncastHandle for MmHandle {
+    fn downcast_handle(handle: &Handle) -> &Self {
+        match &handle.data {
+            HandleData::Mm(mm) => mm,
+            _ => todo!("Expected MM handle"),
+        }
+    }
+}
+
+impl DowncastHandle for WaiterHandle {
+    fn downcast_handle(handle: &Handle) -> &Self {
+        match &handle.data {
+            HandleData::Waiter(waiter) => waiter,
+            _ => todo!("Expected waiter handle"),
+        }
+    }
+}
+
+unsafe fn mm_modify(
+    thread: &mut Thread,
+    mut mm: Option<&mut Mm>,
+    regions_ptr: usize,
+    regions_len: usize,
+) -> Result<(), KError> {
+    let mut region_arg: RegionArg;
+    for i in 0..regions_len {
+        region_arg = copy_val_from_user(regions_ptr as usize + i * size_of::<RegionArg>());
+        let flags = RegionMapFlags::from_bits_truncate(region_arg.flags as u64);
+
+        if region_arg.region == 0 {
+            // TODO: Support a MemProtect flag to change permissions instead of unmapping
+
+            // Unmap the memory region
+            assert!(
+                region_arg.addr.is_multiple_of(PAGE_SIZE),
+                "Unmap region arg addr must be page aligned"
+            );
+            assert!(
+                region_arg.size.is_multiple_of(PAGE_SIZE),
+                "Unmap region arg size must be page aligned"
+            );
+
+            if let Some(mm) = mm.as_mut() {
+                mm.unmap(region_arg.addr, region_arg.size);
+            } else {
+                thread.mm().unmap(region_arg.addr, region_arg.size);
+            }
+        } else {
+            assert_eq!(region_arg.addr, 0, "Region arg addr must be 0");
+            // Map the memory region
+            with_handle::<RegionHandle>(thread, region_arg.region, |thread, _, region| {
+                let mut page_flags: u64 = mmu::PT_ISH | mmu::PT_MEM; // inner shareable
+                if flags.contains(RegionMapFlags::ReadWrite) {
+                    page_flags |= mmu::PT_RW_EL0;
+                } else {
+                    page_flags |= mmu::PT_RO_EL0;
+                }
+
+                let region_val = region.region.borrow();
+                let phy_addr = PhyAddr::from_virt(region_val.data.as_ptr());
+                if let Some(mm) = mm.as_mut() {
+                    region_arg.addr = mm.map(
+                        phy_addr,
+                        region_val.data.len(),
+                        page_flags,
+                        region.region.clone(),
+                    );
+                } else {
+                    region_arg.addr = thread.mm().map(
+                        phy_addr,
+                        region_val.data.len(),
+                        page_flags,
+                        region.region.clone(),
+                    );
+                }
+                0
+            });
+            // TODO: validate the regions before mapping anything to be "all or nothing"
+            //  (unless it gets changed concurrently, not sure it's interesting to handle)
+            copy_val_to_user(
+                regions_ptr as usize + i * size_of::<RegionArg>(),
+                &region_arg,
+            );
+        }
+    }
+    Ok(())
 }

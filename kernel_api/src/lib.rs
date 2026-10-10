@@ -56,6 +56,7 @@ pub enum KError {
     MissingPermission = -8,
     InvalidHandle = -9,
     TooSmall = -10,
+    TooBig = -11,
 }
 
 impl Into<u64> for KError {
@@ -119,8 +120,6 @@ bitflags! {
         const ReadWrite = 1 << 0;
     }
     pub struct CreateThreadFlags: u64 {
-        const SharePageTable = 1 << 0;
-        const ShareHandles = 1 << 1;
     }
     pub struct FutexOp: u64 {
         const WAIT = 0;

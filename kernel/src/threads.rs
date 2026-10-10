@@ -2,7 +2,7 @@ use crate::aarch64::exceptions::ExceptionContext;
 use crate::aarch64::mmu;
 use crate::aarch64::mmu::tlb_flush;
 use crate::drv::arm_gic::{timer_get_absolute_time_ms, timer_set_timeout};
-use crate::ipc::{Futex, Handle, HandleData, Mm, MmRegion, Port, Region};
+use crate::ipc::{Futex, Handle, HandleData, Mm, Port, Region, MAX_HANDLES};
 use crate::page_alloc::{self, PageBox, PageSlice, PhyAddr, PAGE_ALLOC, PAGE_SIZE};
 use crate::println;
 use aarch64_cpu::registers::{ELR_EL1, SPSR_EL1, SP_EL0, TTBR0_EL1};
@@ -18,18 +18,19 @@ use tock_registers::interfaces::Writeable;
 const SCHEDULE_INTERVAL_MS: u64 = 30;
 
 const DEFAULT_PC: usize = 0x10000000;
-const DEFAULT_SP: usize = 0x8000000;
 const DEFAULT_STACK_SIZE: usize = 16 * 1024;
 const DEFAULT_PAGE_FLAGS: u64 = mmu::PT_RW_EL0 | // non-privileged
         mmu::PT_ISH | // inner shareable
         mmu::PT_MEM; // normal memory
 
 static INIT_BIN: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/init.bin"));
+const INIT_BIN_BSS_PAGES: usize = 4; // TODO: calculate at build time
 
 static mut THREAD_MANAGER: MaybeUninit<PageBox<ThreadManager>> = MaybeUninit::uninit();
 
 pub struct Thread {
     mm: Arc<RefCell<Mm>>,
+    #[allow(dead_code)]
     stack: PageBox<[u64; DEFAULT_STACK_SIZE / 8]>,
     pub regs: ExceptionContext,
     sleep_deadline: u64,
@@ -83,7 +84,11 @@ impl Thread {
     }
 
     pub unsafe fn add_handle(&mut self, id: u64, flags: u16, data: HandleData) {
-        self.handles.borrow_mut().push(Handle { id, flags, data });
+        let mut handles = self.handles.borrow_mut();
+        if handles.len() >= MAX_HANDLES {
+            panic!("Too many handles");
+        }
+        handles.push(Handle { id, flags, data });
     }
 
     pub unsafe fn remove_handle(&mut self, id: u64) {
@@ -103,45 +108,8 @@ impl Thread {
         return null_mut();
     }
 
-    pub unsafe fn add_mm_region(&mut self, mm_region: MmRegion) {
-        self.mm.borrow_mut().regions.push(mm_region);
-    }
-
-    pub unsafe fn remove_mm_region(&mut self, remove_start: usize, remove_end: usize) {
-        let regions = &mut self.mm.borrow_mut().regions;
-        let mut i = 0;
-        while i < regions.len() {
-            let region = &mut regions[i];
-            let region_start = region.addr;
-            let region_end = region.addr + region.size;
-
-            if remove_end <= region_start || remove_start >= region_end {
-                // No overlap, move to the next region
-                i += 1;
-            } else if remove_start <= region_start && remove_end >= region_end {
-                // Whole region is covered by the removed range, remove it
-                regions.swap_remove(i);
-            } else if remove_start <= region_start {
-                // Start of the region is covered by the removed range, shrink the region
-                region.addr = remove_end;
-                region.size = region_end - remove_end;
-                i += 1;
-            } else if remove_end >= region_end {
-                // End of the region is covered by the removed range, shrink the region
-                region.size = remove_start - region.addr;
-                i += 1;
-            } else {
-                // Middle of the region is covered by the removed range, split the region
-                let new_region = MmRegion {
-                    addr: remove_end,
-                    size: region_end - remove_end,
-                    region: Arc::clone(&region.region),
-                };
-                region.size = remove_start - region.addr;
-                regions.push(new_region);
-                i += 1;
-            }
-        }
+    pub unsafe fn mm(&mut self) -> RefMut<'_, Mm> {
+        self.mm.borrow_mut()
     }
 
     pub fn start_sleep(&mut self, deadline_ms: u64) {
@@ -160,13 +128,11 @@ impl Thread {
     }
 
     pub unsafe fn map_init_binary(&mut self) {
-        let mut code_slice = PAGE_ALLOC
-            .lock()
-            .alloc_zeroed(INIT_BIN.len().div_ceil(PAGE_SIZE))
-            .expect("OOM");
+        let num_pages = INIT_BIN.len().div_ceil(PAGE_SIZE) + INIT_BIN_BSS_PAGES;
+        let mut code_slice = PAGE_ALLOC.lock().alloc_zeroed(num_pages).expect("OOM");
         code_slice.as_mut_slice()[..INIT_BIN.len()].copy_from_slice(INIT_BIN);
 
-        for code_page in 0..INIT_BIN.len().div_ceil(PAGE_SIZE) {
+        for code_page in 0..num_pages {
             self.mm.borrow_mut().page_table.vmap_at(
                 DEFAULT_PC as usize + code_page * PAGE_SIZE,
                 PhyAddr::from_virt(
@@ -210,33 +176,19 @@ impl Thread {
     }
 
     pub unsafe fn mem_unmap(&mut self, virt_addr: usize, len: usize) {
-        self.mm
-            .borrow_mut()
-            .page_table
-            .as_mut()
-            .vunmap(virt_addr, len);
-
-        // TODO: if within range of ram, free the corresponding PageSlice
-    }
-
-    pub unsafe fn vmap(&mut self, phy_addr: PhyAddr, len: usize, flags: u64) -> usize {
-        self.mm
-            .borrow_mut()
-            .page_table
-            .as_mut()
-            .vmap(phy_addr, len, flags)
-    }
-
-    pub unsafe fn vunmap(&mut self, virt_addr: usize, len: usize) {
-        self.mm
-            .borrow_mut()
-            .page_table
-            .as_mut()
-            .vunmap(virt_addr, len);
+        self.mm.borrow_mut().unmap(virt_addr, len);
     }
 
     pub fn virt_to_phys(&self, virt_addr: usize) -> Option<PhyAddr> {
         self.mm.borrow().page_table.as_ref().virt_to_phys(virt_addr)
+    }
+
+    pub fn clone_mm(&self) -> Arc<RefCell<Mm>> {
+        Arc::clone(&self.mm)
+    }
+
+    pub fn clone_handles(&self) -> Arc<RefCell<Vec<Handle>>> {
+        Arc::clone(&self.handles)
     }
 }
 
@@ -277,7 +229,10 @@ impl ThreadManager {
         }));
 
         // Initialize the init thread
-        let (pid, mut thread) = mgr.create_thread(None, None);
+        let (pid, mut thread) = mgr.create_thread(
+            Arc::new(RefCell::new(Mm::new())),
+            Arc::new(RefCell::new(Vec::new())),
+        );
         thread.state = ThreadState::Running;
         thread.last_scheduled_time = timer_get_absolute_time_ms();
         drop(thread);
@@ -312,8 +267,8 @@ impl ThreadManager {
 
     pub fn create_thread(
         &mut self,
-        share_page_table: Option<Pid>,
-        share_handles: Option<Pid>,
+        mm: Arc<RefCell<Mm>>,
+        handles: Arc<RefCell<Vec<Handle>>>,
     ) -> (Pid, ThreadMutLockGuard<'_>) {
         for pid_idx in 0.. {
             let block_idx = pid_idx / 64;
@@ -325,44 +280,15 @@ impl ThreadManager {
             if self.thread_bitmap[block_idx] & (1 << bit_idx) == 0 {
                 println!(" user: Creating thread {}", pid);
 
-                let new_thread = unsafe {
-                    let stack: PageBox<[u64; DEFAULT_STACK_SIZE / 8]> = PageBox::new_zeroed();
-
-                    let (mm, sp) = if let Some(share_pid) = share_page_table {
-                        let share_thread = self.get_thread_mut(share_pid);
-                        let mm = Arc::clone(&share_thread.mm);
-
-                        let stack_base_phys = PhyAddr::from_virt(stack.as_ptr());
-                        let stack_base_virt = mm.borrow_mut().page_table.as_mut().vmap(
-                            stack_base_phys,
-                            DEFAULT_STACK_SIZE as usize,
-                            DEFAULT_PAGE_FLAGS,
-                        );
-                        let sp = stack_base_virt + DEFAULT_STACK_SIZE;
-                        (mm, sp)
-                    } else {
-                        let mut mm = Mm::new();
-                        for stack_page in (0..DEFAULT_STACK_SIZE).step_by(PAGE_SIZE) {
-                            let phy_addr =
-                                PhyAddr::from_virt(stack.as_ptr().byte_offset(stack_page as isize));
-                            mm.page_table.as_mut().vmap_at(
-                                DEFAULT_SP - DEFAULT_STACK_SIZE + stack_page,
-                                phy_addr,
-                                DEFAULT_PAGE_FLAGS,
-                            );
-                        }
-                        (Arc::new(RefCell::new(mm)), DEFAULT_SP)
-                    };
-
-                    let handles = if let Some(share_pid) = share_handles {
-                        let share_thread = self.get_thread_mut(share_pid);
-                        Arc::clone(&share_thread.handles)
-                    } else {
-                        Arc::new(RefCell::new(Vec::new()))
-                    };
-
-                    Thread::new(mm, handles, stack, sp)
-                };
+                let stack: PageBox<[u64; DEFAULT_STACK_SIZE / 8]> = PageBox::new_zeroed();
+                let stack_base_phys = PhyAddr::from_virt(stack.as_ptr());
+                let stack_base_virt = mm.borrow_mut().page_table.as_mut().vmap(
+                    stack_base_phys,
+                    DEFAULT_STACK_SIZE as usize,
+                    DEFAULT_PAGE_FLAGS,
+                );
+                let sp = stack_base_virt + DEFAULT_STACK_SIZE;
+                let new_thread = Thread::new(mm, handles, stack, sp);
 
                 self.thread_bitmap[block_idx] |= 1 << bit_idx;
                 if self.threads.len() == pid_idx {
@@ -396,7 +322,7 @@ impl ThreadManager {
         unsafe { RefMut::map(thread, |t| t.assume_init_mut()) }
     }
 
-    pub fn destroy_thread(&mut self, pid: Pid) {
+    pub fn destroy_thread(&mut self, pid: Pid, code: u32) {
         assert!(pid > 0, "Thread 0 is invalid");
         let pid_idx = pid - 1;
         let block_idx = pid_idx / 64;
@@ -409,7 +335,7 @@ impl ThreadManager {
         }
         let mut thread = self.threads[pid_idx as usize].borrow_mut();
 
-        println!(" user: Destroying thread {pid}");
+        println!(" user: Destroying thread {pid} with code {code}");
 
         // Drop the thread and mark it as free
         unsafe { thread.assume_init_drop() };
