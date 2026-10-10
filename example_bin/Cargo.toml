@@ -1,0 +1,21 @@
+[package]
+name = "example-bin"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+kernel_api = { path = "../kernel_api", features = [
+    "user_api",
+    "alloc",
+    "alloc_impl",
+] }
+
+[profile.dev]
+panic = "abort"
+debug = true
+
+[profile.release]
+panic = "abort"
+debug = true

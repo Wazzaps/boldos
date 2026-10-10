@@ -72,7 +72,6 @@ dependencies = [
 name = "init"
 version = "0.1.0"
 dependencies = [
- "buddy_system_allocator",
  "fdt-rs",
  "kernel_api",
  "num_enum",
@@ -85,6 +84,7 @@ name = "kernel_api"
 version = "0.1.0"
 dependencies = [
  "bitflags",
+ "buddy_system_allocator",
  "num_enum",
  "zerocopy",
 ]

@@ -4,7 +4,6 @@
 extern crate alloc;
 
 mod drv;
-mod heap;
 mod ipc_test;
 mod process_test;
 
@@ -106,80 +105,80 @@ fn main() {
 
     // Find all devices
     let _gic_and_timer = GicAndTimer::find_and_init(&dtb).expect("Failed to parse device tree");
-    let mut _qemu_fwcfg = QemuFwCfg::find_and_init(&dtb).expect("Failed to parse device tree");
-    _qemu_fwcfg.dump_files();
-    drv::virtio::virtio_experiment(&dtb);
+    // let mut _qemu_fwcfg = QemuFwCfg::find_and_init(&dtb).expect("Failed to parse device tree");
+    // _qemu_fwcfg.dump_files();
+    let example_bin = drv::virtio::virtio_experiment(&dtb);
 
-    println!("Creating thread");
-    let tid = create_thread(|| {
-        println!("Hello from thread! My PID is {}", get_pid());
-        for _ in 0..6 {
-            let counter = unsafe { *(&raw const GLOBAL_COUNTER) };
-            println!(
-                "Thread Current time: {} ms, counter: {}",
-                GicAndTimer::current_time_ms(),
-                counter
-            );
-            // delay_ticks(500000000);
-            sleep(Duration::from_millis(100));
-        }
-        unsafe { exit(0) };
-    })
-    .expect("Failed to create thread");
-    control_thread(tid, ControlThreadOp::Resume).expect("Failed to resume thread");
-    println!("Thread created with ID: {}", tid);
+    // println!("Creating thread");
+    // let tid = create_thread(|| {
+    //     println!("Hello from thread! My PID is {}", get_pid());
+    //     for _ in 0..6 {
+    //         let counter = unsafe { *(&raw const GLOBAL_COUNTER) };
+    //         println!(
+    //             "Thread Current time: {} ms, counter: {}",
+    //             GicAndTimer::current_time_ms(),
+    //             counter
+    //         );
+    //         // delay_ticks(500000000);
+    //         sleep(Duration::from_millis(100));
+    //     }
+    //     unsafe { exit(0) };
+    // })
+    // .expect("Failed to create thread");
+    // control_thread(tid, ControlThreadOp::Resume).expect("Failed to resume thread");
+    // println!("Thread created with ID: {}", tid);
 
-    println!("Creating futex waiter thread");
-    let futex_waiter_tid = create_thread(|| {
-        println!("Hello from futex waiter thread! My PID is {}", get_pid());
-        loop {
-            let is_ready = futex_wait(
-                FUTEX_WORD.as_ptr(),
-                0,
-                Duration::from_millis(150).as_micros() as u64,
-            )
-            .is_ok();
-            println!(
-                "Futex waiter thread woke up, is_ready: {}, value: {}",
-                is_ready,
-                FUTEX_WORD.load(Ordering::Relaxed)
-            );
-            if is_ready {
-                break;
-            }
-        }
+    // println!("Creating futex waiter thread");
+    // let futex_waiter_tid = create_thread(|| {
+    //     println!("Hello from futex waiter thread! My PID is {}", get_pid());
+    //     loop {
+    //         let is_ready = futex_wait(
+    //             FUTEX_WORD.as_ptr(),
+    //             0,
+    //             Duration::from_millis(150).as_micros() as u64,
+    //         )
+    //         .is_ok();
+    //         println!(
+    //             "Futex waiter thread woke up, is_ready: {}, value: {}",
+    //             is_ready,
+    //             FUTEX_WORD.load(Ordering::Relaxed)
+    //         );
+    //         if is_ready {
+    //             break;
+    //         }
+    //     }
 
-        unsafe { exit(0) };
-    })
-    .expect("Failed to create thread");
-    control_thread(futex_waiter_tid, ControlThreadOp::Resume).expect("Failed to resume thread");
-    println!("Futex waiter thread created with ID: {}", futex_waiter_tid);
+    //     unsafe { exit(0) };
+    // })
+    // .expect("Failed to create thread");
+    // control_thread(futex_waiter_tid, ControlThreadOp::Resume).expect("Failed to resume thread");
+    // println!("Futex waiter thread created with ID: {}", futex_waiter_tid);
 
-    for _ in 0..5 {
-        let counter = unsafe {
-            let counter_ptr = &raw mut GLOBAL_COUNTER;
-            *counter_ptr += 1;
-            *counter_ptr
-        };
-        println!(
-            "Current time: {} ms, counter: {}",
-            GicAndTimer::current_time_ms(),
-            counter
-        );
+    // for _ in 0..5 {
+    //     let counter = unsafe {
+    //         let counter_ptr = &raw mut GLOBAL_COUNTER;
+    //         *counter_ptr += 1;
+    //         *counter_ptr
+    //     };
+    //     println!(
+    //         "Current time: {} ms, counter: {}",
+    //         GicAndTimer::current_time_ms(),
+    //         counter
+    //     );
 
-        // Wake up the futex waiter thread
-        if counter == 3 {
-            println!("Waking up the futex waiter thread");
-            FUTEX_WORD.store(123, Ordering::Relaxed);
-            futex_wake(FUTEX_WORD.as_ptr(), u32::MAX).unwrap();
-        }
+    //     // Wake up the futex waiter thread
+    //     if counter == 3 {
+    //         println!("Waking up the futex waiter thread");
+    //         FUTEX_WORD.store(123, Ordering::Relaxed);
+    //         futex_wake(FUTEX_WORD.as_ptr(), u32::MAX).unwrap();
+    //     }
 
-        // delay_ticks(500000000);
-        sleep(Duration::from_millis(100));
-    }
+    //     // delay_ticks(500000000);
+    //     sleep(Duration::from_millis(100));
+    // }
 
     // ipc_test::ipc_test();
-    process_test::process_test();
+    process_test::process_test(example_bin.expect("Failed to find example-bin"));
     loop {
         sleep(Duration::from_secs(9999));
     }

@@ -660,7 +660,7 @@ unsafe fn mm_modify(
     let mut region_arg: RegionArg;
     for i in 0..regions_len {
         region_arg = copy_val_from_user(regions_ptr as usize + i * size_of::<RegionArg>());
-        let flags = RegionMapFlags::from_bits_truncate(region_arg.flags as u64);
+        let flags = RegionMapFlags::from_bits_truncate(region_arg.flags);
 
         if region_arg.region == 0 {
             // TODO: Support a MemProtect flag to change permissions instead of unmapping

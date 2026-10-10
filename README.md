@@ -119,12 +119,13 @@ alloc: Initializing early allocator
     - [x] Mapping of regions to the current address space
     - [x] Unmapping of regions from the current address space
     - [x] Actually reducing the ref count per freed page so the region can be freed
-    - [ ] Mapping of regions to other address spaces
-    - [ ] Unmapping of regions from other address spaces
+    - [x] Mapping of regions to other address spaces
+    - [x] Unmapping of regions from other address spaces
   - [ ] Waiters (stateful futex/port waiting)
   - [ ] Shared ring buffer over regions & futex
   - [ ] Objects/Interfaces/Methods
-= [x] Thread/Process termination
+- [x] Thread/Process termination
+- [x] Flat executable loader
 
 ### Milestone 3: Usable for something
 

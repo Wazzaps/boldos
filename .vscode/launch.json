@@ -8,6 +8,7 @@
             "targetCreateCommands": [
                 "target create ${workspaceFolder}/kernel/target/aarch64-none-elf/debug/kernel.elf",
                 "target modules add ${workspaceFolder}/init/target/aarch64-none-elf/release/init.elf",
+                "target modules add ${workspaceFolder}/example_bin/target/aarch64-none-elf/release/example-bin.elf",
             ],
             "processCreateCommands": [
                 "gdb-remote localhost:1234"
@@ -20,6 +21,7 @@
             "targetCreateCommands": [
                 "target create ${workspaceFolder}/kernel/target/aarch64-none-elf/release/kernel.elf",
                 "target modules add ${workspaceFolder}/init/target/aarch64-none-elf/release/init.elf",
+                "target modules add ${workspaceFolder}/example_bin/target/aarch64-none-elf/release/example-bin.elf",
             ],
             "processCreateCommands": [
                 "gdb-remote localhost:1234"

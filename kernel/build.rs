@@ -24,4 +24,12 @@ fn main() {
         .success()
         .then_some(())
         .expect("Failed to compile init binary");
+    Command::new("make")
+        .env("OUT_DIR", "../example_bin/target/aarch64-none-elf/release")
+        .current_dir("../example_bin")
+        .status()
+        .unwrap()
+        .success()
+        .then_some(())
+        .expect("Failed to compile example-bin binary");
 }

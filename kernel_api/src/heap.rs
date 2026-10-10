@@ -1,8 +1,7 @@
+use crate::user::mem_map;
+use crate::{MemMapFlags, println};
 use buddy_system_allocator::LockedHeap;
 use core::alloc::{GlobalAlloc, Layout};
-use kernel_api::println;
-use kernel_api::user::mem_map;
-use kernel_api::MemMapFlags;
 
 static HEAP_ALLOCATOR: LockedHeap<33> = LockedHeap::new();
 
@@ -22,10 +21,12 @@ unsafe impl GlobalAlloc for MemMappingAllocator {
                     .next_power_of_two()
                     .max(1024 * 1024);
                 println!("Expanding heap by {} bytes", new_size);
-                let buffer = mem_map(new_size, MemMapFlags::ReadWrite)
-                    .expect("Failed to map memory for heap");
-                println!("Mapped memory at {:p}", buffer);
-                allocator.init(buffer as usize, new_size);
+                unsafe {
+                    let buffer = mem_map(new_size, MemMapFlags::ReadWrite)
+                        .expect("Failed to map memory for heap");
+                    println!("Mapped memory at {:p}", buffer);
+                    allocator.init(buffer as usize, new_size);
+                }
 
                 allocator
                     .alloc(layout)
@@ -36,6 +37,8 @@ unsafe impl GlobalAlloc for MemMappingAllocator {
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        HEAP_ALLOCATOR.dealloc(ptr, layout);
+        unsafe {
+            HEAP_ALLOCATOR.dealloc(ptr, layout);
+        }
     }
 }

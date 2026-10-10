@@ -7,6 +7,9 @@ use zerocopy::{FromBytes, Immutable, IntoBytes};
 #[cfg(feature = "user_api")]
 pub mod user;
 
+#[cfg(feature = "alloc_impl")]
+pub mod heap;
+
 pub type Pid = u32;
 pub type HandleId = u64;
 
@@ -128,7 +131,7 @@ bitflags! {
         const WAIT = 0;
         const WAKE = 1;
     }
-    pub struct RegionMapFlags: u64 {
+    pub struct RegionMapFlags: u32 {
         const ReadWrite = 1 << 0;
     }
 }

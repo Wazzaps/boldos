@@ -1,6 +1,7 @@
 # add-symbol-file kernel/target/aarch64-none-elf/debug/kernel.elf 0x40100000
 add-symbol-file kernel/target/aarch64-none-elf/debug/kernel.elf 0xffffff0040100000
 add-symbol-file init/target/aarch64-none-elf/release/init.elf 0x10000000
+add-symbol-file example_bin/target/aarch64-none-elf/release/example-bin.elf 0x50000000
 
 # Break on the second instruction so RustRover actually stops before booting
 b *0x40100004

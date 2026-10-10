@@ -10,7 +10,9 @@ use virtio_drivers::device::virtio_9p::VirtIO9p;
 use virtio_drivers::transport::mmio::{MmioError, MmioTransport, VirtIOHeader};
 use virtio_drivers::transport::{DeviceType, DeviceTypeError, Transport};
 
-pub fn virtio_experiment(dtb: &DevTree) {
+pub fn virtio_experiment(dtb: &DevTree) -> Option<Vec<u8>> {
+    let mut out_file = None;
+
     let mut nodes = dtb.compatible_nodes("virtio,mmio");
     while let Some(node) = nodes.next().expect("Failed to get next virtio node") {
         let mut prop_iter = node.props();
@@ -50,7 +52,7 @@ pub fn virtio_experiment(dtb: &DevTree) {
                         );
 
                         match transport.device_type() {
-                            DeviceType::Block => virtio_blk(transport),
+                            DeviceType::Block => out_file = Some(virtio_blk(transport)),
                             //     DeviceType::GPU => virtio_gpu(transport),
                             //     DeviceType::Network => virtio_net(transport),
                             //     DeviceType::Console => virtio_console(transport),
@@ -67,6 +69,7 @@ pub fn virtio_experiment(dtb: &DevTree) {
             }
         }
     }
+    out_file
 }
 
 struct HalImpl;
@@ -119,14 +122,19 @@ unsafe impl virtio_drivers::Hal for HalImpl {
     }
 }
 
-fn virtio_blk(transport: MmioTransport) {
+fn virtio_blk(transport: MmioTransport) -> Vec<u8> {
     let mut blk =
         VirtIOBlk::<HalImpl, MmioTransport>::new(transport).expect("failed to create blk driver");
     let capacity = blk.capacity();
     println!("virtio-blk: capacity in sectors: {capacity}");
-    let mut buf = [0u8; SECTOR_SIZE];
-    blk.read_blocks(0, &mut buf).expect("failed to read blocks");
-    println!("virtio-blk: read sector: {buf:02x?}");
+    let mut file = vec![0u8; SECTOR_SIZE * capacity as usize];
+    // let mut buf = [0u8; SECTOR_SIZE];
+    for block in 0..capacity as usize {
+        let offset = block * SECTOR_SIZE;
+        let buf = &mut file[offset..offset + SECTOR_SIZE];
+        blk.read_blocks(block, buf).expect("failed to read blocks");
+    }
+    file
 }
 
 fn virtio_9p(transport: MmioTransport) {
