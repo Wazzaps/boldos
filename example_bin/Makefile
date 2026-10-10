@@ -1,4 +1,7 @@
 .PHONY: all
+
+OUT_DIR ?= target/aarch64-none-elf/release
+
 all: ${OUT_DIR}/example-bin.bin
 SRC := $(shell find src -type f)
 

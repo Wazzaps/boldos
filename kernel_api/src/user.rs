@@ -42,7 +42,7 @@ macro_rules! print {
 #[macro_export]
 macro_rules! println {
     () => ($crate::print!("\n"));
-    ($($arg:tt)*) => ($crate::print!(" init: {}\n", format_args!($($arg)*)));
+    ($($arg:tt)*) => ($crate::print!(" {}: {}\n", env!("CARGO_CRATE_NAME"), format_args!($($arg)*)));
 }
 
 #[derive(Debug)]
@@ -55,6 +55,14 @@ impl Handle {
 
     pub fn as_u64(&self) -> u64 {
         self.0.get()
+    }
+
+    pub fn from_raw(raw: NonZeroU64) -> Self {
+        Handle(raw)
+    }
+
+    pub fn from_u64(raw: u64) -> Self {
+        Handle(NonZeroU64::new(raw).expect("Invalid handle"))
     }
 
     pub fn duplicate(&self) -> Result<Self, KError> {

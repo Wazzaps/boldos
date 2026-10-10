@@ -1,8 +1,8 @@
 use alloc::vec::Vec;
 use core::arch::naked_asm;
 use kernel_api::user::{
-    control_thread, create_thread_raw, dump_hex_slice, mm_create, region_create_virtual,
-    region_write_full,
+    control_thread, create_thread_raw, dump_hex_slice, mm_create, port_create, port_send,
+    region_create_virtual, region_write_full,
 };
 use kernel_api::{println, ControlThreadOp, CreateThreadFlags, RegionArg, RegionMapFlags};
 
@@ -49,14 +49,22 @@ pub fn process_test(example_bin: Vec<u8>) {
     let code_region_addr = regions[0].addr;
     println!("Process test: Code region address: {:#x}", code_region_addr);
 
+    let (recv_handle, send_handle) = port_create().expect("Failed to create port");
+    println!(
+        "Process test: Port created: recv={:?}, send={:?}",
+        recv_handle, send_handle
+    );
+
     let pid = create_thread_raw(
         code_region_addr,
-        0,
+        recv_handle.as_u64() as usize,
         CreateThreadFlags::empty(),
-        None,
+        Some(&[recv_handle]),
         Some(&mm),
     )
     .expect("Failed to create thread");
     println!("Process test: Thread created: {}", pid);
     control_thread(pid, ControlThreadOp::Resume).expect("Failed to resume thread");
+
+    port_send(&send_handle, 0, b"Hello from parent!", &[]).expect("Failed to send message");
 }

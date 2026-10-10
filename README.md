@@ -14,17 +14,19 @@ $ cargo run
 --- BoldOS ---
 alloc: Initializing early allocator
  user: Starting usermode
+alloc: Expanding kernel heap by 16384 bytes
  user: Creating thread 1
-[10] init: Hello from usermode!
-[15] init: DTB mapped at 0x50200000, hexdump of first 32 bytes:
-[16]d00dfeed 00100000 00000040 00001db4 00000030 00000011 00000010 00000000 
-[16]
-[17] init: Boot args: "placeholder kernel params"
-[17] init: RAM: 0p40000000 (268435456 bytes)
-[18] init: Expanding heap by 1048576 bytes
-[23] init: Mapped memory at 0x50400000
-[23] init: Heap vector: [1, 2, 3]
-[23] init: Extracting timer information from DTB
+ user: Entering thread 0xffffff004012a808
+[7] init: Hello from usermode!
+[10] init: DTB mapped at 0x50200000, hexdump of first 32 bytes:
+[10]d00dfeed 00100000 00000040 00001db4 00000030 00000011 00000010 00000000 
+[11]
+[12] init: Boot args: "placeholder kernel params"
+[12] init: RAM: 0p40000000 (268435456 bytes)
+[12] init: Expanding heap by 1048576 bytes
+[16] init: Mapped memory at 0x50400000
+[16] init: Heap vector: [1, 2, 3]
+[16] init: Extracting timer information from DTB
  user: LoadKernelDevice: GicAndTimer {
     gicd_base: 0x8000000,
     gicc_base: 0x8010000,
@@ -32,35 +34,22 @@ alloc: Initializing early allocator
     _padding: 0x0,
 }
   drv: Initializing ARM GIC
-[27] init: ipc_test: Starting
- user: Allocating port for thread 1 at address 0xffffff0040141000 with recv_handle 1
-[28] init: ipc_test: Port created: Handle(1), Handle(2)
+[28] init: Detected virtio MMIO device with vendor id 0x554D4551, device type Block, version Modern
+[29] init: virtio: dma_alloc: phy_addr: 0x40030000 | virt_addr: 0x54400000
+(virtio spam truncated...)
+[38] init: virtio: dma_dealloc paddr: 40035000 | vaddr: 0x54800000 | pages: 1
+[38] init: Process test: Code region size: 20480
+[39] init: Process test: Code region address: 0x50000000
+ user: Allocating port for thread 1 with recv_handle 4
+[40] init: Process test: Port created: recv=Handle(4), send=Handle(5)
  user: Creating thread 2
-[30] init: ipc_test: Thread created: 2
-[30] init: ipc_test: Port empty
- user: cpu idling for: 499ms
-[530] init: ipc_test: Port empty
- user: cpu idling for: 500ms
-[1031] init: ipc_test: Port empty
- user: cpu idling for: 99ms
-[1131] init: ipc_test: Send went OK
- user: cpu idling for: 399ms
-[1532] init: ipc_test: Received 15 bytes: 'Hello, world! 0' + 0 handles
- user: cpu idling for: 500ms
-[2033] init: ipc_test: Port empty
- user: cpu idling for: 333ms
-[2367] init: ipc_test: Send went OK
- user: cpu idling for: 166ms
-[2533] init: ipc_test: Received 15 bytes: 'Hello, world! 1' + 0 handles
- user: cpu idling for: 500ms
-[3034] init: ipc_test: Port empty
- user: cpu idling for: 500ms
-[3535] init: ipc_test: Port empty
- user: cpu idling for: 66ms
-[3601] init: ipc_test: Send went OK
- user: cpu idling for: 433ms
-[4035] init: ipc_test: Received 15 bytes: 'Hello, world! 2' + 0 handles
- user: cpu idling for: 500ms
+[40] init: Process test: Thread created: 2
+[41] init: Expanding heap by 1048576 bytes
+[45] init: Mapped memory at 0x50400000
+[45] init: Hello from example_bin! Here's a heap vector: [1, 2, 3]
+[45] init: Received message from parent: Hello from parent!
+ user: Destroying thread 2 with code 0
+ user: cpu idling for: 9998995ms
 
 ```
 
@@ -112,7 +101,7 @@ alloc: Initializing early allocator
   - [x] Shared handle tables between threads
   - [ ] Ports (short messages + handles)
     - [x] Passing byte buffers
-    - [ ] Passing handles
+    - [x] Passing handles
     - [ ] Buffer pool
   - [x] Regions (contiguous memory blocks)
   - [ ] MemoryMappings (address spaces for processes)
