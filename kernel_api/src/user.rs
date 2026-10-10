@@ -1,12 +1,21 @@
+#[cfg(feature = "alloc")]
+extern crate alloc;
+
+#[cfg(feature = "alloc")]
 use alloc::boxed::Box;
-use core::{arch::asm, num::NonZeroU64, time::Duration};
-use kernel_api::{
-    kernel_device, ControlThreadOp, CreateThreadFlags, FutexOp, KError, MemMapFlags, PhyMapFlags,
-    Pid, RegionArg, Syscall,
+
+use crate::{
+    ControlThreadOp, CreateThreadFlags, FutexOp, KError, MemMapFlags, PhyMapFlags, Pid, RegionArg,
+    Syscall, kernel_device,
 };
+use core::arch::asm;
+use core::fmt::Write;
+use core::num::NonZeroU64;
+use core::panic::PanicInfo;
+use core::time::Duration;
 use num_enum::FromPrimitive;
 
-pub(crate) struct FmtWriteAdapter;
+pub struct FmtWriteAdapter;
 
 impl core::fmt::Write for FmtWriteAdapter {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
@@ -26,7 +35,7 @@ pub fn _print(args: core::fmt::Arguments) {
 /// Like the `print!` macro in the standard library, but prints to the UART.
 #[macro_export]
 macro_rules! print {
-    ($($arg:tt)*) => ($crate::utils::_print(format_args!($($arg)*)));
+    ($($arg:tt)*) => ($crate::user::_print(format_args!($($arg)*)));
 }
 
 /// Like the `println!` macro in the standard library, but prints to the UART.
@@ -229,6 +238,7 @@ pub fn delay_ticks(ticks: u64) {
     }
 }
 
+#[cfg(feature = "alloc")]
 pub fn create_thread<F: FnOnce() -> ! + Send + 'static>(func: F) -> Result<Pid, KError> {
     let data = Box::into_raw(Box::new(func)) as *mut ();
 
@@ -238,7 +248,7 @@ pub fn create_thread<F: FnOnce() -> ! + Send + 'static>(func: F) -> Result<Pid, 
     }
 
     create_thread_raw(
-        trampoline::<F> as usize,
+        trampoline::<F> as *const () as usize,
         data as usize,
         CreateThreadFlags::empty(),
         None,
@@ -683,4 +693,10 @@ macro_rules! get_msr {
         );
         val
     }};
+}
+
+#[panic_handler]
+fn rust_panic(info: &PanicInfo) -> ! {
+    let _ = write!(FmtWriteAdapter, "Panic: {}\n", info.message());
+    unsafe { exit(0xffffffff) };
 }

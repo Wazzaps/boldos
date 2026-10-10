@@ -1,11 +1,10 @@
-use crate::println;
-use crate::utils::{dump_hex_slice, mem_unmap, phy_map, virt_to_phys};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::ptr::NonNull;
 use fdt_rs::base::DevTree;
 use fdt_rs::prelude::{FallibleIterator, PropReader};
-use kernel_api::PhyMapFlags;
+use kernel_api::user::{dump_hex_slice, mem_unmap, phy_map, virt_to_phys};
+use kernel_api::{println, PhyMapFlags};
 use virtio_drivers::device::blk::{VirtIOBlk, SECTOR_SIZE};
 use virtio_drivers::device::virtio_9p::VirtIO9p;
 use virtio_drivers::transport::mmio::{MmioError, MmioTransport, VirtIOHeader};

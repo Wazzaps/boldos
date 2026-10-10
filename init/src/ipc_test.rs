@@ -1,14 +1,11 @@
-use crate::{
-    println,
-    utils::{
-        control_thread, create_thread, mm_map, mm_unmap_range, port_create, port_recv, port_send,
-        region_create_physical, region_create_virtual, region_get_size, region_read_full,
-        region_write_full, sleep, AsciiStr,
-    },
-};
 use alloc::format;
 use core::time::Duration;
-use kernel_api::{ControlThreadOp, KError};
+use kernel_api::user::{
+    control_thread, create_thread, mm_map, mm_unmap_range, port_create, port_recv, port_send,
+    region_create_physical, region_create_virtual, region_get_size, region_read_full,
+    region_write_full, sleep, AsciiStr,
+};
+use kernel_api::{println, ControlThreadOp, KError};
 
 pub fn ipc_test() -> ! {
     println!("ipc_test: Starting");

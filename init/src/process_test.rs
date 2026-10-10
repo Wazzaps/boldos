@@ -1,13 +1,9 @@
-use kernel_api::{ControlThreadOp, CreateThreadFlags, RegionArg};
-
-use crate::{
-    println,
-    utils::{
-        control_thread, create_thread_raw, dump_hex_slice, mm_create, region_create_virtual,
-        region_write_full,
-    },
-};
 use core::arch::naked_asm;
+use kernel_api::user::{
+    control_thread, create_thread_raw, dump_hex_slice, mm_create, region_create_virtual,
+    region_write_full,
+};
+use kernel_api::{println, ControlThreadOp, CreateThreadFlags, RegionArg};
 
 #[unsafe(naked)]
 extern "C" fn example_process() -> ! {

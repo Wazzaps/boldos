@@ -1,9 +1,8 @@
-use crate::println;
-use crate::utils::{mem_unmap, phy_map};
 use fdt_rs::base::DevTree;
 use fdt_rs::error::DevTreeError;
 use fdt_rs::prelude::{FallibleIterator, PropReader};
-use kernel_api::PhyMapFlags;
+use kernel_api::user::{mem_unmap, phy_map};
+use kernel_api::{println, PhyMapFlags};
 
 pub struct QemuFwCfg {
     base: *mut u64,

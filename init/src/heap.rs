@@ -1,7 +1,7 @@
-use crate::println;
-use crate::utils::mem_map;
 use buddy_system_allocator::LockedHeap;
 use core::alloc::{GlobalAlloc, Layout};
+use kernel_api::println;
+use kernel_api::user::mem_map;
 use kernel_api::MemMapFlags;
 
 static HEAP_ALLOCATOR: LockedHeap<33> = LockedHeap::new();

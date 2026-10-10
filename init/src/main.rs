@@ -7,23 +7,20 @@ mod drv;
 mod heap;
 mod ipc_test;
 mod process_test;
-pub(crate) mod utils;
 
 use crate::drv::gic::GicAndTimer;
 use crate::drv::qemu_fwcfg::QemuFwCfg;
-use crate::utils::{
-    control_thread, create_thread, download_more_ram, dump_hex_slice, exit, futex_wait, futex_wake,
-    get_pid, mem_unmap, phy_map, sleep, FmtWriteAdapter,
-};
-use core::fmt::Write;
-use core::panic::PanicInfo;
 use core::ptr::slice_from_raw_parts;
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
 use fdt_rs::base::DevTree;
 use fdt_rs::error::DevTreeError;
 use fdt_rs::prelude::{FallibleIterator, PropReader};
-use kernel_api::{ControlThreadOp, PhyMapFlags};
+use kernel_api::user::{
+    control_thread, create_thread, download_more_ram, dump_hex_slice, exit, futex_wait, futex_wake,
+    get_pid, mem_unmap, phy_map, sleep,
+};
+use kernel_api::{println, ControlThreadOp, PhyMapFlags};
 
 static mut GLOBAL_COUNTER: u64 = 0;
 static FUTEX_WORD: AtomicU32 = AtomicU32::new(0);
@@ -193,10 +190,4 @@ fn main() {
 pub extern "C" fn _start() -> ! {
     main();
     unsafe { exit(0) }
-}
-
-#[panic_handler]
-fn rust_panic(info: &PanicInfo) -> ! {
-    let _ = write!(FmtWriteAdapter, "Panic: {}\n", info.message());
-    unsafe { exit(0xffffffff) };
 }

@@ -4,8 +4,11 @@ use core::fmt::Debug;
 use num_enum::{FromPrimitive, IntoPrimitive, TryFromPrimitive};
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 
+#[cfg(feature = "user_api")]
+pub mod user;
+
 pub type Pid = u32;
-pub type Handle = u64;
+pub type HandleId = u64;
 
 // TODO: rename to NounVerb
 #[derive(TryFromPrimitive, IntoPrimitive, Eq, PartialEq, Copy, Clone, Debug)]
@@ -68,7 +71,7 @@ impl Into<u64> for KError {
 #[derive(Debug, FromBytes, IntoBytes, Immutable)]
 #[repr(C)]
 pub struct RegionArg {
-    pub region: Handle,
+    pub region: HandleId,
     pub size: usize,
     pub offset: usize,
     // Specify 0 for arbitrary address

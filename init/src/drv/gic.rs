@@ -3,9 +3,8 @@ use fdt_rs::{
     error::DevTreeError,
     prelude::{FallibleIterator, PropReader},
 };
-use kernel_api::kernel_device;
-
-use crate::{get_msr, println, utils::load_kernel_device};
+use kernel_api::user::load_kernel_device;
+use kernel_api::{get_msr, kernel_device, println};
 
 #[allow(dead_code)]
 pub struct GicAndTimer {
