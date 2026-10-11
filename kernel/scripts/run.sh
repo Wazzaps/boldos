@@ -8,7 +8,7 @@ shift
 MEM=256M
 CPU_CORES=4
 CPU_TYPE=cortex-a72
-INITRD="$(pwd)/../example_bin/target/aarch64-none-elf/release/example-bin.bin"
+INITRD="$(pwd)/../example_bin/target/aarch64-none-elf/release/example-bin.elf"
 
 qemu-system-aarch64 \
   -machine virt -cpu $CPU_TYPE -smp $CPU_CORES -m $MEM \

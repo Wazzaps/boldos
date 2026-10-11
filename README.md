@@ -124,7 +124,7 @@ alloc: Expanding kernel heap by 16384 bytes
 ### Milestone 4: Optimism is important
 
 - [ ] Multicore
-- [ ] ELF file loader
+- [x] ELF file loader
 - [ ] Basic unix primitives emulation (fork, socket, tty, etc.) 
 - [ ] Libc implementation
 - [ ] Python port

@@ -113,7 +113,7 @@ impl PageTable {
     /// # Safety
     ///
     /// Must be called on a L0 table
-    pub fn vmap_at(&mut self, vaddr: usize, paddr: PhyAddr, attrs: u64) {
+    pub fn vmap_at_single(&mut self, vaddr: usize, paddr: PhyAddr, attrs: u64) {
         const COMMON_FLAGS: u64 = PT_PAGE | // it has the "Present" flag, which must be set, and we have area in it mapped by pages
             PT_AF; // accessed flag. Without this we're going to have a Data Abort exception
 
@@ -230,10 +230,17 @@ impl PageTable {
         let vaddr = self
             .find_hole(0x50000000, size_bytes)
             .expect("Out of virtual memory space");
-        for offset in (0..size_bytes).step_by(PAGE_SIZE) {
-            self.vmap_at(vaddr + offset, PhyAddr(paddr.0 + offset), attrs);
-        }
+        self.vmap_at(vaddr, paddr, size_bytes, attrs);
         vaddr
+    }
+
+    pub fn vmap_at(&mut self, vaddr: usize, paddr: PhyAddr, size_bytes: usize, attrs: u64) {
+        assert_eq!(size_bytes % PAGE_SIZE, 0);
+        assert_eq!(paddr.0 % PAGE_SIZE, 0);
+        assert_eq!(vaddr % PAGE_SIZE, 0);
+        for offset in (0..size_bytes).step_by(PAGE_SIZE) {
+            self.vmap_at_single(vaddr + offset, PhyAddr(paddr.0 + offset), attrs);
+        }
     }
 
     /// Finds an unallocated virtual region of the given size, with a given minimum address

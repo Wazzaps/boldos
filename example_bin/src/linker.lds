@@ -10,7 +10,7 @@ SECTIONS {
   }
 
   /* TODO: NX bit is not implemented yet */
-  /* . = ALIGN(4096); */
+  . = ALIGN(4096);
 
   .rodata : {
     _rodata_start = .;

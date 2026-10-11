@@ -24,7 +24,7 @@ const DEFAULT_PAGE_FLAGS: u64 = mmu::PT_RW_EL0 | // non-privileged
         mmu::PT_ISH | // inner shareable
         mmu::PT_MEM; // normal memory
 
-static INIT_BIN: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/init.bin"));
+static INIT_BIN: &[u8] = include_bytes!("../../init/target/aarch64-none-elf/release/init.bin");
 const INIT_BIN_BSS_PAGES: usize = 4; // TODO: calculate at build time
 
 static mut THREAD_MANAGER: MaybeUninit<PageBox<ThreadManager>> = MaybeUninit::uninit();
@@ -144,17 +144,12 @@ impl Thread {
         let mut code_slice = PAGE_ALLOC.lock().alloc_zeroed(num_pages).expect("OOM");
         code_slice.as_mut_slice()[..INIT_BIN.len()].copy_from_slice(INIT_BIN);
 
-        for code_page in 0..num_pages {
-            self.mm.borrow_mut().page_table.vmap_at(
-                DEFAULT_PC as usize + code_page * PAGE_SIZE,
-                PhyAddr::from_virt(
-                    code_slice
-                        .as_ptr()
-                        .byte_offset((code_page * PAGE_SIZE) as isize),
-                ),
-                DEFAULT_PAGE_FLAGS,
-            );
-        }
+        self.mm.borrow_mut().page_table.vmap_at(
+            DEFAULT_PC as usize,
+            PhyAddr::from_virt(code_slice.as_ptr()),
+            num_pages * PAGE_SIZE,
+            DEFAULT_PAGE_FLAGS,
+        );
         core::mem::forget(code_slice);
     }
 

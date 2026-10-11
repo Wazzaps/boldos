@@ -424,6 +424,10 @@ pub unsafe fn handle_syscall(e: &mut ExceptionContext) {
                 e.gpr[0] = KError::InvalidArgument.into();
                 return;
             }
+            if len == 0 {
+                e.gpr[0] = KError::TooSmall.into();
+                return;
+            }
 
             let region_id = mgr.reserve_handle_id();
 
@@ -711,7 +715,6 @@ unsafe fn mm_modify(
                 thread.mm().unmap(region_arg.addr, region_arg.size);
             }
         } else {
-            assert_eq!(region_arg.addr, 0, "Region arg addr must be 0");
             // Map the memory region
             with_handle::<RegionHandle>(thread, region_arg.region, |thread, _, region| {
                 let mut page_flags: u64 = mmu::PT_ISH | mmu::PT_MEM; // inner shareable
@@ -723,21 +726,24 @@ unsafe fn mm_modify(
 
                 let region_val = region.region.borrow();
                 let phy_addr = PhyAddr::from_virt(region_val.data.as_ptr());
-                if let Some(mm) = mm.as_mut() {
-                    region_arg.addr = mm.map(
-                        phy_addr,
-                        region_val.data.len(),
-                        page_flags,
-                        region.region.clone(),
-                    );
-                } else {
-                    region_arg.addr = thread.mm().map(
-                        phy_addr,
-                        region_val.data.len(),
-                        page_flags,
-                        region.region.clone(),
-                    );
-                }
+                with_thread_mm_or_override(thread, &mut mm, |mm| {
+                    if region_arg.addr == 0 {
+                        region_arg.addr = mm.map(
+                            phy_addr,
+                            region_val.data.len(),
+                            page_flags,
+                            region.region.clone(),
+                        );
+                    } else {
+                        mm.map_at(
+                            region_arg.addr,
+                            phy_addr,
+                            region_val.data.len(),
+                            page_flags,
+                            region.region.clone(),
+                        );
+                    }
+                });
                 0
             });
             // TODO: validate the regions before mapping anything to be "all or nothing"
@@ -749,4 +755,16 @@ unsafe fn mm_modify(
         }
     }
     Ok(())
+}
+
+unsafe fn with_thread_mm_or_override(
+    thread: &mut Thread,
+    mm: &mut Option<&mut Mm>,
+    f: impl FnOnce(&mut Mm),
+) {
+    if let Some(mm) = mm {
+        f(mm);
+    } else {
+        f(&mut thread.mm())
+    }
 }

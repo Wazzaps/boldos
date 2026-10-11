@@ -125,14 +125,6 @@ impl Mm {
         }
     }
 
-    unsafe fn vmap(&mut self, phy_addr: PhyAddr, len: usize, flags: u64) -> usize {
-        self.page_table.as_mut().vmap(phy_addr, len, flags)
-    }
-
-    unsafe fn vunmap(&mut self, virt_addr: usize, len: usize) {
-        self.page_table.as_mut().vunmap(virt_addr, len);
-    }
-
     pub unsafe fn map(
         &mut self,
         phy_addr: PhyAddr,
@@ -140,7 +132,7 @@ impl Mm {
         page_flags: u64,
         region: Arc<RefCell<Region>>,
     ) -> usize {
-        let virt_addr = self.vmap(phy_addr, size, page_flags);
+        let virt_addr = self.page_table.as_mut().vmap(phy_addr, size, page_flags);
         // Ensure the region doesn't get freed
         self.add_region(MmRegion {
             region,
@@ -150,8 +142,27 @@ impl Mm {
         virt_addr
     }
 
+    pub unsafe fn map_at(
+        &mut self,
+        virt_addr: usize,
+        phy_addr: PhyAddr,
+        size: usize,
+        page_flags: u64,
+        region: Arc<RefCell<Region>>,
+    ) {
+        self.page_table
+            .as_mut()
+            .vmap_at(virt_addr, phy_addr, size, page_flags);
+        // Ensure the region doesn't get freed
+        self.add_region(MmRegion {
+            region,
+            addr: virt_addr,
+            size,
+        });
+    }
+
     pub unsafe fn unmap(&mut self, virt_addr: usize, len: usize) {
-        self.vunmap(virt_addr, len);
+        self.page_table.as_mut().vunmap(virt_addr, len);
         self.remove_region(virt_addr, virt_addr.saturating_add(len));
     }
 }

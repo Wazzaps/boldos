@@ -4,6 +4,7 @@
 extern crate alloc;
 
 mod drv;
+mod elf_loader;
 mod ipc_test;
 mod process_test;
 

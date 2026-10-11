@@ -706,6 +706,9 @@ macro_rules! get_msr {
 #[panic_handler]
 fn rust_panic(info: &PanicInfo) -> ! {
     let _ = write!(FmtWriteAdapter, "Panic: {}\n", info.message());
+    if let Some(location) = info.location() {
+        let _ = write!(FmtWriteAdapter, "location: {}\n", location);
+    }
     // unsafe { exit(0xffffffff) };
     loop {}
 }
