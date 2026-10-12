@@ -19,7 +19,7 @@ pub struct FmtWriteAdapter;
 
 impl core::fmt::Write for FmtWriteAdapter {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        unsafe { log_buf(s.as_bytes()) };
+        log_buf(s.as_bytes());
         Ok(())
     }
 }
@@ -103,7 +103,7 @@ impl Drop for Handle {
     }
 }
 
-pub unsafe fn exit(code: u32) -> ! {
+pub fn exit(code: u32) -> ! {
     unsafe {
         asm!(
         "svc #0",
@@ -114,7 +114,7 @@ pub unsafe fn exit(code: u32) -> ! {
     }
 }
 
-pub unsafe fn log_buf(s: &[u8]) {
+pub fn log_buf(s: &[u8]) {
     unsafe {
         asm!(
         "svc #0",
@@ -247,12 +247,13 @@ pub fn delay_ticks(ticks: u64) {
 }
 
 #[cfg(feature = "alloc")]
-pub fn create_thread<F: FnOnce() -> ! + Send + 'static>(func: F) -> Result<Pid, KError> {
+pub fn create_thread<F: FnOnce() + Send + 'static>(func: F) -> Result<Pid, KError> {
     let data = Box::into_raw(Box::new(func)) as *mut ();
 
-    extern "C" fn trampoline<F: FnOnce() -> !>(data: *mut ()) -> ! {
+    extern "C" fn trampoline<F: FnOnce()>(data: *mut ()) -> ! {
         let closure = unsafe { Box::from_raw(data as *mut F) };
-        closure()
+        closure();
+        exit(0);
     }
 
     create_thread_raw(
@@ -392,7 +393,7 @@ pub fn port_send(
     port: &Handle,
     flags: u32,
     bytes: &[u8],
-    handles: &[Handle],
+    handles: &[HandleId],
 ) -> Result<(), KError> {
     let mut result: i64;
     unsafe {
@@ -709,6 +710,6 @@ fn rust_panic(info: &PanicInfo) -> ! {
     if let Some(location) = info.location() {
         let _ = write!(FmtWriteAdapter, "location: {}\n", location);
     }
-    // unsafe { exit(0xffffffff) };
+    // exit(0xffffffff);
     loop {}
 }

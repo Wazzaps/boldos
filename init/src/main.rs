@@ -7,6 +7,7 @@ mod drv;
 mod elf_loader;
 mod ipc_test;
 mod process_test;
+mod vfs;
 
 use crate::drv::gic::GicAndTimer;
 use crate::drv::qemu_fwcfg::QemuFwCfg;
@@ -179,6 +180,8 @@ fn main() {
     // }
 
     // ipc_test::ipc_test();
+    let vfs_port = vfs::spawn_vfs_server().expect("Failed to spawn VFS server");
+    vfs::vfs_test(vfs_port);
     process_test::process_test(example_bin.expect("Failed to find example-bin"));
     loop {
         sleep(Duration::from_secs(9999));
@@ -189,5 +192,5 @@ fn main() {
 #[link_section = ".text.init"]
 pub extern "C" fn _start() -> ! {
     main();
-    unsafe { exit(0) }
+    exit(0);
 }

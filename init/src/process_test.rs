@@ -46,7 +46,12 @@ pub fn process_test(example_bin: Vec<u8>) {
     )
     .expect("Failed to create thread");
     println!("Process test: Thread created: {}", pid);
-    port_send(&send_handle, 0, b"Hello from parent!", &[shmem_handle])
-        .expect("Failed to send message");
+    port_send(
+        &send_handle,
+        0,
+        b"Hello from parent!",
+        &[shmem_handle.as_u64()],
+    )
+    .expect("Failed to send message");
     control_thread(pid, ControlThreadOp::Resume).expect("Failed to resume thread");
 }

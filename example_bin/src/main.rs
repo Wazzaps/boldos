@@ -37,5 +37,5 @@ pub extern "C" fn _start(handles: *const HandleId, handles_len: u64) -> ! {
     let handles = unsafe { core::slice::from_raw_parts(handles, handles_len as usize) };
     // println!("Example bin: handles: {:?}", handles);
     main(handles);
-    unsafe { exit(0) }
+    exit(0);
 }
