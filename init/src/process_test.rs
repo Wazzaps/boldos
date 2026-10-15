@@ -7,6 +7,7 @@ use kernel_api::user::{
 use kernel_api::{println, ControlThreadOp, CreateThreadFlags, RegionArg, RegionMapFlags};
 
 use crate::elf_loader::Elf;
+use crate::utils::ReadAt;
 
 // #[unsafe(naked)]
 // extern "C" fn example_process() -> ! {
@@ -21,8 +22,8 @@ use crate::elf_loader::Elf;
 //     );
 // }
 
-pub fn process_test(example_bin: Vec<u8>) {
-    let elf = Elf::load(&example_bin).expect("Failed to load ELF");
+pub fn process_test(example_bin: &dyn ReadAt) {
+    let elf = Elf::load(example_bin).expect("Failed to load ELF");
 
     let (recv_handle, send_handle) = port_create().expect("Failed to create port");
     // println!(

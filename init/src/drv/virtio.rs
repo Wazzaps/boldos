@@ -1,5 +1,6 @@
 use alloc::vec;
 use alloc::vec::Vec;
+use core::cell::RefCell;
 use core::ops::Deref;
 use core::ptr::NonNull;
 use fdt_rs::base::DevTree;
@@ -13,6 +14,8 @@ use no_std_io::io::{Cursor, Read};
 use virtio_drivers::device::virtio_9p::VirtIO9p;
 use virtio_drivers::transport::mmio::{MmioError, MmioTransport, VirtIOHeader};
 use virtio_drivers::transport::{DeviceType, DeviceTypeError, Transport};
+
+use crate::utils::ReadAt;
 
 pub struct VirtioNinep {
     ninep: VirtIO9p<HalImpl, MmioTransport<'static>>,
@@ -233,6 +236,22 @@ impl core::fmt::Debug for NinepReadDirEntry {
             self.ty,
             AsciiStr(&self.name)
         )
+    }
+}
+
+pub struct NinepFileReader<'a> {
+    pub ninep: RefCell<&'a mut VirtioNinep>,
+    pub file: NinepFile,
+}
+
+impl<'a> ReadAt for NinepFileReader<'a> {
+    fn read_at(&self, buf: &mut [u8], offset: u64) -> usize {
+        let chunk = self
+            .ninep
+            .borrow_mut()
+            .read_file(self.file, offset, buf.len() as u32);
+        buf[..chunk.len()].copy_from_slice(&chunk);
+        chunk.len()
     }
 }
 

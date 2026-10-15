@@ -8,6 +8,8 @@ use kernel_api::{
 };
 use zerocopy::{FromBytes, Immutable, KnownLayout};
 
+use crate::utils::{ReadAt, ReadAtZerocopyExt};
+
 pub struct Elf {
     pub mm: Handle,
     pub entry_point: usize,
@@ -49,8 +51,8 @@ struct Elf64Phdr {
 }
 
 impl Elf {
-    pub fn load(elf: &[u8]) -> Result<Self, Box<dyn Error>> {
-        let ehdr = Elf64Ehdr::ref_from_bytes(&elf[..size_of::<Elf64Ehdr>()]).unwrap();
+    pub fn load(elf: &dyn ReadAt) -> Result<Self, Box<dyn Error>> {
+        let ehdr = Elf64Ehdr::read_from_bytes_at(elf, 0).unwrap();
         if ehdr.e_ident
             != [
                 0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -79,8 +81,7 @@ impl Elf {
         let mut last_flags = 0;
         for phdr_idx in 0..ehdr.e_phnum {
             let offset = (ehdr.e_phoff + phdr_idx as u64 * ehdr.e_phentsize as u64) as usize;
-            let phdr =
-                Elf64Phdr::ref_from_bytes(&elf[offset..offset + size_of::<Elf64Phdr>()]).unwrap();
+            let phdr = Elf64Phdr::read_from_bytes_at(elf, offset as u64).unwrap();
 
             if phdr.p_type != PT_LOAD {
                 continue;
@@ -140,9 +141,14 @@ impl Elf {
 
             let region = region_create_virtual(0, effective_pgal_size)?;
             if phdr.p_filesz != 0 {
-                let slice =
-                    &elf[phdr.p_offset as usize..phdr.p_offset as usize + phdr.p_filesz as usize];
-                region_write_full(&region, slice, 0)?;
+                let mut buf = vec![0u8; 4096];
+                for off in (0..phdr.p_filesz).step_by(4096) {
+                    let sz = elf.read_at(
+                        &mut buf[..4096.min((phdr.p_filesz - off) as usize)],
+                        phdr.p_offset + off,
+                    );
+                    region_write_full(&region, &buf[..sz], off as usize)?;
+                }
             }
             regions.push(RegionArg {
                 region: region.as_u64(),

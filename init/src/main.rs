@@ -7,14 +7,14 @@ mod drv;
 mod elf_loader;
 mod ipc_test;
 mod process_test;
+mod utils;
 mod vfs;
 
 use crate::drv::gic::GicAndTimer;
-use crate::drv::qemu_fwcfg::QemuFwCfg;
-use crate::drv::virtio::VirtioNinep;
-use alloc::vec::Vec;
+use crate::drv::virtio::{NinepFileReader, VirtioNinep};
+use core::cell::RefCell;
 use core::ptr::slice_from_raw_parts;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::AtomicU32;
 use core::time::Duration;
 use fdt_rs::base::DevTree;
 use fdt_rs::error::DevTreeError;
@@ -119,14 +119,6 @@ fn main() {
     // }
 
     let file = ninep.open_file(root, b"example-bin.elf", VirtioNinep::O_RDONLY);
-    let mut binary = Vec::new();
-    loop {
-        let chunk = ninep.read_file(file, binary.len() as u64, 64 * 1024);
-        if chunk.is_empty() {
-            break;
-        }
-        binary.extend_from_slice(&chunk);
-    }
 
     // println!("Creating thread");
     // let tid = create_thread(|| {
@@ -199,7 +191,11 @@ fn main() {
     // ipc_test::ipc_test();
     // let vfs_port = vfs::spawn_vfs_server().expect("Failed to spawn VFS server");
     // vfs::vfs_test(vfs_port);
-    process_test::process_test(binary);
+    let binary_reader = NinepFileReader {
+        ninep: RefCell::new(&mut ninep),
+        file: file,
+    };
+    process_test::process_test(&binary_reader);
     loop {
         sleep(Duration::from_secs(9999));
     }
