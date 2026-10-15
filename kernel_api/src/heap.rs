@@ -19,7 +19,7 @@ unsafe impl GlobalAlloc for MemMappingAllocator {
                 // Expand and try again. The buddy alloc needs a block at least twice as big as the allocation.
                 let new_size = (layout.size().next_power_of_two() + 1)
                     .next_power_of_two()
-                    .max(1024 * 1024);
+                    .max(64 * 1024);
                 println!("Expanding heap by {} bytes", new_size);
                 unsafe {
                     let buffer = mem_map(new_size, MemMapFlags::ReadWrite)
@@ -28,10 +28,17 @@ unsafe impl GlobalAlloc for MemMappingAllocator {
                     allocator.init(buffer as usize, new_size);
                 }
 
-                allocator
+                let res = allocator
                     .alloc(layout)
                     .expect("Failed to allocate memory")
-                    .as_ptr()
+                    .as_ptr();
+                println!(
+                    "um_alloc_stats: user: {}, allocated: {}, total: {}",
+                    allocator.stats_alloc_user(),
+                    allocator.stats_alloc_actual(),
+                    allocator.stats_total_bytes()
+                );
+                res
             }
         }
     }

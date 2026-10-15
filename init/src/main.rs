@@ -11,6 +11,8 @@ mod vfs;
 
 use crate::drv::gic::GicAndTimer;
 use crate::drv::qemu_fwcfg::QemuFwCfg;
+use crate::drv::virtio::VirtioNinep;
+use alloc::vec::Vec;
 use core::ptr::slice_from_raw_parts;
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
@@ -109,7 +111,22 @@ fn main() {
     let _gic_and_timer = GicAndTimer::find_and_init(&dtb).expect("Failed to parse device tree");
     // let mut _qemu_fwcfg = QemuFwCfg::find_and_init(&dtb).expect("Failed to parse device tree");
     // _qemu_fwcfg.dump_files();
-    let example_bin = drv::virtio::virtio_experiment(&dtb);
+    let mut ninep = VirtioNinep::find(&dtb).expect("Failed to find Virtio 9p");
+    let root = ninep.init();
+    // let root_dir = ninep.open_file(root, b"", VirtioNinep::O_RDONLY | VirtioNinep::O_DIRECTORY);
+    // for item in ninep.read_dir(root_dir, 0) {
+    //     println!("Item: {:?}", item);
+    // }
+
+    let file = ninep.open_file(root, b"example-bin.elf", VirtioNinep::O_RDONLY);
+    let mut binary = Vec::new();
+    loop {
+        let chunk = ninep.read_file(file, binary.len() as u64, 64 * 1024);
+        if chunk.is_empty() {
+            break;
+        }
+        binary.extend_from_slice(&chunk);
+    }
 
     // println!("Creating thread");
     // let tid = create_thread(|| {
@@ -180,9 +197,9 @@ fn main() {
     // }
 
     // ipc_test::ipc_test();
-    let vfs_port = vfs::spawn_vfs_server().expect("Failed to spawn VFS server");
-    vfs::vfs_test(vfs_port);
-    process_test::process_test(example_bin.expect("Failed to find example-bin"));
+    // let vfs_port = vfs::spawn_vfs_server().expect("Failed to spawn VFS server");
+    // vfs::vfs_test(vfs_port);
+    process_test::process_test(binary);
     loop {
         sleep(Duration::from_secs(9999));
     }

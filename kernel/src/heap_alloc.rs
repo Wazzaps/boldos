@@ -26,10 +26,18 @@ unsafe impl GlobalAlloc for KernelAllocator {
                 allocator.init(buffer.as_ptr() as usize, new_size);
                 core::mem::forget(buffer);
 
-                allocator
+                let res = allocator
                     .alloc(layout)
                     .expect("Failed to allocate memory")
-                    .as_ptr()
+                    .as_ptr();
+
+                println!(
+                    "km_alloc_stats: user: {}, allocated: {}, total: {}",
+                    allocator.stats_alloc_user(),
+                    allocator.stats_alloc_actual(),
+                    allocator.stats_total_bytes()
+                );
+                res
             }
         }
     }
